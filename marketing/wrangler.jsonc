@@ -1,0 +1,10 @@
+// The marketing site at netwatch.imran.codes: static assets on a Worker.
+// Deploy with `wrangler deploy` from this directory.
+{
+  "name": "netwatch-site",
+  "compatibility_date": "2026-10-01",
+  "assets": {
+    "directory": "."
+  },
+  "routes": [{ "pattern": "netwatch.imran.codes", "custom_domain": true }]
+}
