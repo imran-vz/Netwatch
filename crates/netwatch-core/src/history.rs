@@ -60,6 +60,31 @@ impl History {
     }
 }
 
+/// Group a full history window of `capacity` samples into `n` bars, oldest
+/// first, each the busiest sample (per direction) in its slot. Slots the
+/// history hasn't reached yet are `None`, so a fresh graph fills in from the
+/// right like a full one scrolls.
+pub fn bars(points: &[RatePoint], capacity: usize, n: usize) -> Vec<Option<RatePoint>> {
+    let n = n.max(1);
+    let per = capacity.div_ceil(n).max(1);
+    // Align to the newest sample: the last slot always holds the latest one.
+    let missing = (n * per).saturating_sub(points.len());
+    (0..n)
+        .map(|i| {
+            let start = (i * per).saturating_sub(missing);
+            let end = ((i + 1) * per).saturating_sub(missing).min(points.len());
+            (start < end).then(|| {
+                points[start..end]
+                    .iter()
+                    .fold(RatePoint::default(), |m, p| RatePoint {
+                        down: m.down.max(p.down),
+                        up: m.up.max(p.up),
+                    })
+            })
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -78,6 +103,23 @@ mod tests {
         assert_eq!(v, [3.0, 4.0, 5.0]);
         assert_eq!(h.tail(2), [p(4.0), p(5.0)]);
         assert_eq!(h.tail(10).len(), 3);
+    }
+
+    #[test]
+    fn bars_take_the_busiest_sample_per_slot() {
+        let pts: Vec<RatePoint> = (1..=6).map(|v| p(v as f64)).collect();
+        let b = bars(&pts, 6, 3);
+        let down: Vec<Option<f64>> = b.iter().map(|b| b.map(|p| p.down)).collect();
+        assert_eq!(down, [Some(2.0), Some(4.0), Some(6.0)]);
+    }
+
+    #[test]
+    fn bars_fill_in_from_the_right() {
+        let pts = [p(1.0), p(2.0), p(3.0)];
+        let b = bars(&pts, 6, 3);
+        let down: Vec<Option<f64>> = b.iter().map(|b| b.map(|p| p.down)).collect();
+        assert_eq!(down, [None, Some(1.0), Some(3.0)]);
+        assert!(bars(&[], 6, 3).iter().all(Option::is_none));
     }
 
     #[test]

@@ -1,11 +1,12 @@
-//! Zed One Dark / One Light themes and fonts (shared with Guidy), following
-//! the OS appearance.
+//! Zed One Dark / One Light themes (shared with Guidy) and the UI fonts,
+//! following the OS appearance. The dashboard draws with its own dark palette
+//! ([`crate::ui`]).
 
 use gpui_kit::component::{Theme, ThemeMode, ThemeRegistry};
 use gpui_kit::{App, Window, WindowAppearance};
 
-pub const UI_FONT: &str = "IBM Plex Sans";
-pub const MONO_FONT: &str = "Lilex";
+pub const UI_FONT: &str = "Geist";
+pub const MONO_FONT: &str = "Geist Mono";
 pub const DARK_THEME: &str = "One Dark";
 pub const LIGHT_THEME: &str = "One Light";
 

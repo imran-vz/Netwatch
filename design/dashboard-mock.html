@@ -1,0 +1,587 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Netwatch dashboard — mock</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600&family=Geist+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --page: #4f4f4f;
+    --card: #191919;
+    --card-border: #2a2a2a;
+    --panel: #0f0f0f;
+    --panel-border: #1e1e1e;
+    --control: #131313;
+    --control-border: #282828;
+    --raised: #1f1f1f;
+    --raised-border: #303030;
+    --sep: #222;
+    --fg: #f2f2f2;
+    --fg-2: #a3a3a3;
+    --fg-3: #7a7a7a;
+    --fg-4: #555;
+    --bar: #5c5c5c;
+    --track: #1d1d1d;
+    --green: #4fcf7d;
+    --green-dim: #1f5a35;
+    --amber: #e8b54a;
+    --red: #f0675c;
+    --sans: "Geist", "IBM Plex Sans", -apple-system, system-ui, sans-serif;
+    --mono: "Geist Mono", "Lilex", ui-monospace, monospace;
+    --w: 400px;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    background: var(--page);
+    font-family: var(--sans);
+    color: var(--fg);
+    -webkit-font-smoothing: antialiased;
+    padding: 48px;
+    display: flex; flex-wrap: wrap; gap: 32px; align-items: flex-start;
+  }
+  .mono { font-family: var(--mono); }
+
+  /* ---------- card shell ---------- */
+  .card {
+    width: var(--w);
+    background: var(--card);
+    border: 1px solid var(--card-border);
+    border-radius: 22px;
+    padding-bottom: 8px;
+    box-shadow: 0 20px 50px rgba(0,0,0,.35);
+  }
+  .head { display: flex; align-items: center; gap: 15px; padding: 20px 20px 18px; }
+  .icon-btn {
+    flex: none; width: 37px; height: 37px; border-radius: 10px;
+    background: #1c1c1c; border: 1px solid #2e2e2e;
+    display: grid; place-items: center; color: var(--fg); cursor: pointer;
+  }
+  .icon-btn:hover { background: #222; }
+  .icon-btn svg { width: 19px; height: 19px; }
+  .titles { flex: 1; min-width: 0; }
+  .title { font-size: 17.5px; font-weight: 500; letter-spacing: -.01em; line-height: 1.2; }
+  .sub { font-size: 14.5px; color: var(--fg-2); margin-top: 3px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .sub .dot { margin: 0 3px; color: var(--fg-3); }
+  .chip {
+    flex: none; font-family: var(--mono); font-size: 13.5px; color: var(--fg-2);
+    background: #141414; border: 1px solid #2a2a2a; border-radius: 8px; padding: 6px 10px;
+  }
+  .panel {
+    margin: 0 8px; background: var(--panel); border: 1px solid var(--panel-border);
+    border-radius: 17px; padding: 20px;
+    display: flex; flex-direction: column; gap: 22px;
+  }
+
+  /* ---------- segmented ---------- */
+  .seg {
+    display: grid; grid-template-columns: repeat(4, 1fr);
+    background: var(--control); border: 1px solid var(--control-border);
+    border-radius: 12px; padding: 3px; height: 44px;
+  }
+  .seg button {
+    all: unset; text-align: center; font-size: 15px; color: var(--fg-2);
+    border-radius: 9px; border: 1px solid transparent; cursor: pointer;
+  }
+  .seg button:hover { color: var(--fg); }
+  .seg button.on { background: var(--raised); border-color: var(--raised-border); color: var(--fg); }
+
+  /* ---------- label rows ---------- */
+  .lab { display: flex; justify-content: space-between; align-items: baseline; }
+  .lab .l { font-size: 14.5px; color: var(--fg-2); }
+  .lab .r { font-family: var(--mono); font-size: 15px; color: var(--fg); }
+  .lab .r .u { color: var(--fg-2); margin-left: 6px; }
+  .lab .r.dim { color: var(--fg-3); font-family: var(--sans); font-size: 14.5px; }
+  .group { display: flex; flex-direction: column; gap: 12px; }
+
+  /* ---------- bar history ---------- */
+  .bars { position: relative; height: 92px; display: flex; gap: 0; justify-content: space-between; }
+  .bars .col { position: relative; width: 5.5px; height: 100%; }
+  .bars .col::before { /* track */
+    content: ""; position: absolute; left: 0; right: 0; top: 0; height: 62px;
+    background: var(--track); border-radius: 1.5px;
+  }
+  .bars .col::after {
+    content: ""; position: absolute; left: 0; right: 0; top: 66px; height: 26px;
+    background: var(--track); border-radius: 1.5px;
+  }
+  .bars .dn, .bars .up { position: absolute; left: 0; right: 0; border-radius: 1.5px; z-index: 1; transition: height .25s; }
+  .bars .dn { bottom: 30px; background: var(--bar); }
+  .bars .up { top: 66px; background: #3a7a52; }
+  .bars .col.last .dn { background: #f2f2f2; }
+  .bars .col.last .up { background: var(--green); }
+
+  /* ---------- run-list rows ---------- */
+  .rows { display: flex; flex-direction: column; gap: 14px; }
+  .row { display: flex; align-items: center; gap: 15px; }
+  .badge {
+    flex: none; width: 76px; height: 29px; border-radius: 5px;
+    display: grid; place-items: center;
+    font-family: var(--mono); font-size: 14.5px;
+    background: #191919; border: 1px solid #333; color: var(--fg-2);
+  }
+  .badge.warn { background: #2a2210; border-color: #5f4b1d; color: var(--amber); }
+  .badge.bad { background: #2c1513; border-color: #632823; color: var(--red); }
+  .badge.good { background: #11241a; border-color: #23533a; color: var(--green); }
+  .row .main { flex: 1; min-width: 0; font-size: 16.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; letter-spacing: -.01em; }
+  .row .main .x { color: var(--fg-2); }
+  .row .when { flex: none; font-size: 14.5px; color: var(--fg-2); }
+
+  /* ---------- comparison bars: label · bar · value, shared scale ---------- */
+  .hbars { display: flex; flex-direction: column; gap: 11px; }
+  .hb { display: grid; grid-template-columns: 84px 1fr 64px; align-items: center; gap: 12px; }
+  .hb .n { font-size: 14.5px; color: var(--fg-2); white-space: nowrap; }
+  .hb .t { height: 6px; border-radius: 3px; background: var(--track); overflow: hidden; }
+  .hb .f { height: 100%; border-radius: 3px; background: var(--bar); transition: width .25s; }
+  .hb .f.lite { background: #d8d8d8; }
+  .hb .f.green { background: var(--green); }
+  .hb .f.amber { background: var(--amber); }
+  .hb .f.red { background: var(--red); }
+  .hb .v { font-family: var(--mono); font-size: 15px; text-align: right; }
+
+  /* ---------- boxes (stepper / input style) ---------- */
+  .pair { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+  .trio { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
+  .box {
+    height: 47px; border-radius: 11px; background: var(--control); border: 1px solid #252525;
+    display: flex; align-items: center; gap: 10px; padding: 0 14px;
+    font-family: var(--mono); font-size: 16px; color: var(--fg);
+  }
+  .box .k { color: var(--fg-4); }
+  .box .u { color: var(--fg-2); font-size: 14px; margin-left: auto; }
+  .box.big { height: 58px; font-size: 21px; justify-content: center; }
+  .box.big .u { margin-left: 0; font-size: 14.5px; }
+  .stepper {
+    height: 47px; border-radius: 12px; background: var(--control); border: 1px solid #252525;
+    display: flex; align-items: center; justify-content: space-between; padding: 4px;
+    font-family: var(--mono); font-size: 16px;
+  }
+  .stepper button {
+    all: unset; width: 37px; height: 37px; border-radius: 9px; background: #1b1b1b;
+    display: grid; place-items: center; font-size: 20px; color: var(--fg); cursor: pointer;
+  }
+  .stepper button:hover { background: #242424; }
+  .stepper button:disabled { color: var(--fg-4); cursor: default; }
+
+  /* ---------- label/value list ---------- */
+  .kv { display: flex; flex-direction: column; gap: 10px; }
+  .kv > div { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; font-size: 14.5px; }
+  .kv > div > span:first-child { color: var(--fg-2); }
+  .kv > div > span:last-child { color: var(--fg); text-align: right; }
+  .kv .x { color: var(--fg-3); }
+  .kv .ok { color: var(--green); } .kv .warn { color: var(--amber); } .kv .bad { color: var(--red); }
+  .box.big .u { color: var(--fg-3); }
+  .sep { height: 1px; background: var(--sep); margin: 0 -20px; }
+
+  /* ---------- toggles ---------- */
+  .toggles { display: flex; flex-direction: column; }
+  .trow { display: flex; align-items: center; gap: 16px; padding: 14px 0; border-top: 1px solid var(--sep); }
+  .trow:first-child { border-top: 0; padding-top: 2px; }
+  .trow .t { flex: 1; }
+  .trow .t b { display: block; font-weight: 400; font-size: 17px; letter-spacing: -.01em; }
+  .trow .t span { display: block; font-size: 14.5px; color: var(--fg-3); margin-top: 3px; }
+  .trow.off .t b { color: var(--fg-2); }
+  .sw {
+    all: unset; flex: none; width: 43px; height: 25px; border-radius: 13px; background: #1c1c1c;
+    position: relative; cursor: pointer; transition: background .15s;
+  }
+  .sw::after {
+    content: ""; position: absolute; top: 3px; left: 3px; width: 19px; height: 19px; border-radius: 50%;
+    background: #3c3c3c; transition: left .15s, background .15s;
+  }
+  .sw.on { background: var(--green); }
+  .sw.on::after { left: 21px; background: #fff; }
+
+  /* ---------- buttons ---------- */
+  .btns { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+  .btns.one { grid-template-columns: 1fr; }
+  .btn {
+    all: unset; height: 43px; border-radius: 12px; text-align: center; font-size: 15.5px; cursor: pointer;
+    background: #141414; border: 1px solid #2a2a2a; color: var(--fg);
+    display: grid; place-items: center; position: relative; overflow: hidden;
+  }
+  .btn:hover { background: #1a1a1a; }
+  .btn.pri { background: #ededed; border-color: #ededed; color: #111; font-weight: 500; }
+  .btn.pri:hover { background: #fff; }
+  .btn .prog { position: absolute; left: 0; bottom: 0; height: 3px; background: var(--green); transition: width .25s linear; }
+  .btn.busy { background: #1a1a1a; border-color: #2a2a2a; color: var(--fg-2); cursor: default; }
+
+  /* ---------- storage chart ---------- */
+  .chart {
+    position: relative; height: 210px; border-radius: 10px; border: 1px solid #1c1c1c; overflow: hidden;
+    background-color: #0c0c0c;
+    background-image:
+      linear-gradient(#1a1a1a 1px, transparent 1px),
+      linear-gradient(90deg, #1a1a1a 1px, transparent 1px),
+      linear-gradient(#141414 1px, transparent 1px),
+      linear-gradient(90deg, #141414 1px, transparent 1px);
+    background-size: 54px 54px, 54px 54px, 13.5px 13.5px, 13.5px 13.5px;
+    background-position: -1px -1px;
+  }
+  .chart svg { position: absolute; inset: 0; width: 100%; height: 100%; }
+  .chart .tag { position: absolute; font-family: var(--mono); font-size: 13.5px; color: #6a6a6a; }
+  .chart .read { position: absolute; right: 14px; bottom: 12px; font-family: var(--mono); font-size: 15px; color: #cfcfcf; }
+
+  /* ---------- storage bar: used of total, colour by fullness ---------- */
+  .sbar { height: 8px; border-radius: 4px; background: var(--track); overflow: hidden; }
+  .sbar div { height: 100%; border-radius: 4px; background: var(--green); }
+  .sbar div.amber { background: var(--amber); }
+  .sbar div.red { background: var(--red); }
+  .cap { display: flex; justify-content: space-between; font-size: 14px; color: var(--fg-3); margin-top: 10px; }
+
+  .pill {
+    flex: none; display: flex; align-items: center; gap: 8px; height: 33px; padding: 0 12px;
+    border-radius: 8px; border: 1px solid #2a2a2a; font-size: 14.5px; color: var(--fg-2); min-width: 92px; justify-content: space-between;
+    font-family: var(--mono);
+  }
+
+  /* ---------- dropdown ---------- */
+  .dd { position: relative; }
+  .dd .pill { cursor: pointer; font-family: var(--sans); font-size: 15px; color: var(--fg); min-width: 104px; }
+  .dd.open .pill { border-color: #2f8a53; }
+  .dd svg.chev { width: 12px; height: 12px; color: var(--fg-2); transition: transform .15s; }
+  .dd.open svg.chev { transform: rotate(180deg); }
+  .menu {
+    display: none; position: absolute; right: 0; top: 40px; width: 210px; z-index: 5;
+    background: #141414; border: 1px solid #2a2a2a; border-radius: 12px; padding: 6px;
+    box-shadow: 0 16px 40px rgba(0,0,0,.6);
+  }
+  .dd.open .menu { display: block; }
+  .menu div {
+    display: flex; justify-content: space-between; align-items: center;
+    height: 33px; padding: 0 10px; border-radius: 7px; font-size: 15px; color: var(--fg-2); cursor: pointer;
+  }
+  .menu div:hover { background: #1f1f1f; color: var(--fg); }
+  .menu div.on { color: var(--fg); }
+  .menu div.on::after { content: "✓"; color: var(--green); font-size: 15px; }
+  .menu div .k { font-family: var(--mono); color: var(--fg-3); font-size: 13.5px; }
+
+  /* ---------- menu-bar preview ---------- */
+  .mbar {
+    height: 52px; border-radius: 11px; border: 1px solid #222; background: #0b0b0b;
+    display: flex; align-items: center; justify-content: flex-end; gap: 16px; padding: 0 16px;
+    font-size: 13px; color: #8a8a8a;
+  }
+  .mbar .item { display: flex; align-items: center; gap: 6px; padding: 4px 6px; border-radius: 5px; background: #1e1e1e; color: #eee; }
+  .mbar .rates { font-family: var(--mono); font-size: 9.5px; line-height: 1.05; text-align: right; }
+  .tab { display: none; flex-direction: column; gap: 22px; }
+  .tab.on { display: flex; }
+
+  .note { width: 100%; color: #cfcfcf; font-size: 13px; font-family: var(--mono); opacity: .7; }
+</style>
+</head>
+<body>
+
+<div class="note">Netwatch dashboard · each card is the same popover on a different tab · live fake data, controls are interactive</div>
+
+<template id="card-tpl">
+  <div class="card">
+    <div class="head">
+      <div class="icon-btn" data-ic></div>
+      <div class="titles">
+        <div class="title" data-title></div>
+        <div class="sub" data-sub></div>
+      </div>
+      <div class="chip" data-chip hidden></div>
+      <div class="icon-btn" data-next title="Next tab">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M9.5 6l6 6-6 6"/></svg>
+      </div>
+    </div>
+    <div class="panel">
+      <div class="seg">
+        <button data-t="overview">Overview</button>
+        <button data-t="network">Network</button>
+        <button data-t="storage">Storage</button>
+        <button data-t="settings">Settings</button>
+      </div>
+
+      <!-- OVERVIEW: the network bars (shared) + the storage bar -->
+      <div class="tab" data-tab="overview">
+        <div>
+          <div class="bars" data-bars></div>
+          <div class="cap mono" style="font-size:13px"><span>peak <span data-dn-peak></span></span><span>last 2 min</span></div>
+        </div>
+        <div class="pair">
+          <div class="box big"><span class="k">↓</span><span data-dn></span><span class="u" data-dn-u></span></div>
+          <div class="box big"><span class="k">↑</span><span data-up></span><span class="u" data-up-u></span></div>
+        </div>
+        <div>
+          <div class="lab"><span class="l">Storage</span><span class="r">606 GB<span class="u">of 994</span></span></div>
+          <div style="height:12px"></div>
+          <div class="sbar"><div style="width:61%"></div></div>
+          <div class="cap"><span>61% used <span style="color:var(--fg-4)">·</span> 388 GB free</span><span style="color:var(--fg-2)">+18.2 GB in 30 days</span></div>
+        </div>
+      </div>
+
+      <!-- NETWORK: live rates, link, and the speed test -->
+      <div class="tab" data-tab="network">
+        <div>
+          <div class="bars" data-bars></div>
+          <div class="cap mono" style="font-size:13px"><span>peak <span data-dn-peak></span></span><span>last 2 min</span></div>
+        </div>
+        <div class="pair">
+          <div class="box big"><span class="k">↓</span><span data-dn></span><span class="u" data-dn-u></span></div>
+          <div class="box big"><span class="k">↑</span><span data-up></span><span class="u" data-up-u></span></div>
+        </div>
+        <div class="kv">
+          <div><span>Link</span><span>en0 <span class="x">· 866 Mb/s ·</span> <span data-util></span>% used</span></div>
+          <div><span>This session</span><span>↓ <span data-tot-dn></span> <span class="x">·</span> ↑ <span data-tot-up></span></span></div>
+        </div>
+        <div class="sep"></div>
+        <div class="group">
+          <div class="lab"><span class="l">Speed test</span><span class="r dim" data-st-when></span></div>
+          <div class="hbars">
+            <div class="hb"><span class="n">Link rate</span><div class="t"><div class="f" style="width:100%"></div></div><span class="v">866</span></div>
+            <div class="hb"><span class="n">Download</span><div class="t"><div class="f lite" data-st-dn-bar></div></div><span class="v" data-st-dn></span></div>
+            <div class="hb"><span class="n">Upload</span><div class="t"><div class="f lite" data-st-up-bar></div></div><span class="v" data-st-up></span></div>
+          </div>
+          <div class="kv" style="margin-top:4px">
+            <div><span>Latency</span><span data-lat></span></div>
+          </div>
+        </div>
+        <div class="btns one"><button class="btn pri" data-run>Run test<span class="prog" style="width:0"></span></button></div>
+      </div>
+
+      <!-- STORAGE -->
+      <div class="tab" data-tab="storage">
+        <div class="chart" data-chart>
+          <svg data-chart-svg></svg>
+          <div class="tag" style="left:14px;bottom:12px">30d ago</div>
+          <div class="tag" style="right:14px;bottom:12px">now</div>
+          <div class="read" style="bottom:12px;left:50%;right:auto;transform:translateX(-50%);font-size:13px;color:#8a8a8a;white-space:nowrap"><span style="color:var(--amber)">- -</span> avg +0.6 GB/day</div>
+        </div>
+        <div>
+          <div class="lab"><span class="l">Storage</span><span class="r">606 GB<span class="u">of 994</span></span></div>
+          <div style="height:12px"></div>
+          <div class="sbar"><div style="width:61%"></div></div>
+          <div class="cap"><span>61% used <span style="color:var(--fg-4)">·</span> 388 GB free</span><span style="color:var(--fg-2)">+18.2 GB in 30 days</span></div>
+        </div>
+      </div>
+
+      <!-- SETTINGS -->
+      <div class="tab" data-tab="settings">
+        <div class="group">
+          <div class="lab"><span class="l">Menu bar</span><span class="r dim">preview</span></div>
+          <div class="mbar" data-mbar></div>
+        </div>
+        <div class="toggles">
+          <div class="trow">
+            <div class="t"><b>Refresh every</b><span>Samples counters and redraws the icon</span></div>
+            <div class="dd" data-dd>
+              <div class="pill"><span data-int-label>1 s</span><svg class="chev" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M3 4.5l3 3 3-3"/></svg></div>
+              <div class="menu">
+                <div data-ms="500">0.5 s <span class="k">60 s graph</span></div>
+                <div data-ms="1000">1 s <span class="k">2 min</span></div>
+                <div data-ms="2000">2 s <span class="k">4 min</span></div>
+                <div data-ms="5000">5 s <span class="k">10 min</span></div>
+              </div>
+            </div>
+          </div>
+          <div class="trow">
+            <div class="t"><b>Show speeds in menu bar</b><span>Rates as text next to the icon</span></div>
+            <button class="sw on" data-sw-rates></button>
+          </div>
+        </div>
+        <div class="btns"><button class="btn" data-reset>Reset</button><button class="btn pri" data-quit>Quit</button></div>
+      </div>
+    </div>
+  </div>
+</template>
+
+<script>
+const TABS = ["overview", "network", "storage", "settings"];
+const ICONS = {
+  overview: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="4" y="4" width="7" height="7" rx="1.5"/><rect x="13" y="4" width="7" height="7" rx="1.5"/><rect x="4" y="13" width="7" height="7" rx="1.5"/><circle cx="16.5" cy="16.5" r="3" fill="var(--green)" stroke="none"/></svg>`,
+  network: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 7h15M4 12h15M4 17h9"/><circle cx="18.5" cy="17.5" r="2.6" fill="var(--green)" stroke="none"/></svg>`,
+  speed: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4.5 17a8 8 0 1 1 15 0"/><path d="M12 13l3.5-4"/><circle cx="12" cy="13.5" r="2.3" fill="var(--green)" stroke="none"/></svg>`,
+  storage: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M5 19c3.5 0 4-4 7-8s5-5 6.5-5"/><circle cx="18.5" cy="6" r="2.4" fill="var(--panel)" stroke="var(--fg)" stroke-width="1.8"/><circle cx="5" cy="19" r="2.2" fill="var(--green)" stroke="none"/></svg>`,
+  settings: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 8h16M4 16h16"/><circle cx="9" cy="8" r="2.6" fill="var(--card)"/><circle cx="15" cy="16" r="2.6" fill="var(--green)" stroke="var(--green)"/></svg>`,
+};
+
+/* ---------- shared fake model ---------- */
+const N = 40, LINK_MBPS = 866;
+const S = {
+  dn: [], up: [], totDn: 2.41e9, totUp: 3.1e8,
+  intervalMs: 1000, showRates: true,
+  speed: { state: "done", dn: 412.3, up: 38.6, rtt: 18, rpm: 1240, started: 0, finished: Date.now() - 120000 },
+};
+let walk = 6e6;
+function nextSample() {
+  walk = Math.max(2e5, walk * (0.82 + Math.random() * 0.36));
+  if (Math.random() < 0.06) walk = 2e7 + Math.random() * 1.6e7;
+  if (walk > 3e7) walk *= 0.6;
+  const dn = walk, up = dn * (0.05 + Math.random() * 0.12) + Math.random() * 2e5;
+  S.dn.push(dn); S.up.push(up);
+  if (S.dn.length > N) { S.dn.shift(); S.up.shift(); }
+  S.totDn += dn * S.intervalMs / 1000; S.totUp += up * S.intervalMs / 1000;
+}
+for (let i = 0; i < N; i++) nextSample();
+
+const fmtRate = b => b >= 1e6 ? (b / 1e6).toFixed(1) + " MB/s" : (b / 1e3).toFixed(0) + " KB/s";
+const fmtBytes = b => b >= 1e9 ? (b / 1e9).toFixed(2) + " GB" : (b / 1e6).toFixed(0) + " MB";
+const ago = ms => { const s = Math.round(ms / 1000); return s < 10 ? "Just now" : s < 60 ? s + "s ago" : Math.round(s / 60) + "m ago"; };
+
+/* ---------- build cards ---------- */
+const cards = [];
+const tpl = document.getElementById("card-tpl");
+TABS.forEach(t => {
+  const el = tpl.content.firstElementChild.cloneNode(true);
+  document.body.appendChild(el);
+  const q = s => el.querySelector(s);
+  const card = { el, q, tab: t };
+  cards.push(card);
+
+  // bars
+  el.querySelectorAll("[data-bars]").forEach(bars => {
+    for (let i = 0; i < N; i++) {
+      const c = document.createElement("div");
+      c.className = "col" + (i === N - 1 ? " last" : "");
+      c.innerHTML = `<div class="dn"></div><div class="up"></div>`;
+      bars.appendChild(c);
+    }
+  });
+
+  // storage chart
+  drawChart(q("[data-chart-svg]"));
+
+  // events
+  el.querySelectorAll(".seg button").forEach(b => b.onclick = () => setTab(card, b.dataset.t));
+  q("[data-next]").onclick = () => setTab(card, TABS[(TABS.indexOf(card.tab) + 1) % TABS.length]);
+  q("[data-run]").onclick = runSpeedTest;
+  q("[data-sw-rates]").onclick = () => { S.showRates = !S.showRates; renderAll(); };
+  const dd = q("[data-dd]");
+  dd.querySelector(".pill").onclick = e => { e.stopPropagation(); dd.classList.toggle("open"); };
+  dd.querySelectorAll(".menu div").forEach(m => m.onclick = () => { S.intervalMs = +m.dataset.ms; dd.classList.remove("open"); restartTimer(); renderAll(); });
+  q("[data-reset]").onclick = () => { S.intervalMs = 1000; S.showRates = true; restartTimer(); renderAll(); };
+  q("[data-quit]").onclick = () => {};
+  setTab(card, t);
+});
+// Settings card shows its dropdown open, like the reference.
+cards[3].q("[data-dd]").classList.add("open");
+document.addEventListener("click", e => { if (!e.target.closest("[data-dd]")) document.querySelectorAll("[data-dd]").forEach(d => d.classList.remove("open")); });
+
+function setTab(card, t) {
+  card.tab = t;
+  card.el.querySelectorAll(".seg button").forEach(b => b.classList.toggle("on", b.dataset.t === t));
+  card.el.querySelectorAll(".tab").forEach(p => p.classList.toggle("on", p.dataset.tab === t));
+  renderCard(card);
+}
+
+/* ---------- storage chart (30 daily samples) ---------- */
+function drawChart(svg) {
+  const W = 342, H = 210, padL = 24, padR = 24, top = 24, bot = 40;
+  const days = [];
+  for (let i = 0; i < 30; i++) days.push(1 / (1 + Math.exp(-(i - 15) / 4.2)) + Math.sin(i * 1.7) * 0.012);
+  const d0 = days[0], scaleK = (606 - 588) / (days[29] - d0);
+  for (let i = 0; i < 30; i++) days[i] = 588 + (days[i] - d0) * scaleK;
+  const lo = 588, hi = 606;
+  const X = i => padL + i / 29 * (W - padL - padR);
+  const Y = val => top + (1 - (val - lo) / (hi - lo)) * (H - top - bot);
+  const pts = days.map((d, i) => [X(i), Y(d)]);
+  // smooth path (Catmull-Rom → Bézier)
+  let d = `M${pts[0][0]},${pts[0][1]}`;
+  for (let i = 0; i < pts.length - 1; i++) {
+    const p0 = pts[i - 1] || pts[i], p1 = pts[i], p2 = pts[i + 1], p3 = pts[i + 2] || p2;
+    d += ` C${p1[0] + (p2[0] - p0[0]) / 6},${p1[1] + (p2[1] - p0[1]) / 6} ${p2[0] - (p3[0] - p1[0]) / 6},${p2[1] - (p3[1] - p1[1]) / 6} ${p2[0]},${p2[1]}`;
+  }
+  const [x0, y0] = pts[0], [x1, y1] = pts[29];
+  svg.setAttribute("viewBox", `0 0 ${W} ${H}`);
+  svg.setAttribute("preserveAspectRatio", "none");
+  svg.innerHTML = `
+    <line x1="${padL + 20}" y1="${y1}" x2="${x1}" y2="${y1}" stroke="#555" stroke-width="1" stroke-dasharray="2 4"/>
+    <text x="${padL + 20}" y="${y1 - 7}" fill="#8a8a8a" font-family="Geist Mono, monospace" font-size="12">606 GB</text>
+    <line x1="${x0}" y1="${y0}" x2="${W - 10}" y2="${y0}" stroke="#555" stroke-width="1" stroke-dasharray="2 4"/>
+    <text x="${W - 10}" y="${y0 - 7}" text-anchor="end" fill="#8a8a8a" font-family="Geist Mono, monospace" font-size="12">588 GB</text>
+    <line x1="${x0}" y1="${y0}" x2="${x1}" y2="${y1}" stroke="var(--amber)" stroke-width="1.3" stroke-dasharray="4 4" opacity=".85"/>
+    <path d="${d}" fill="none" stroke="var(--green)" stroke-width="2"/>
+    ${pts.filter((_, i) => i % 3 === 1).map(p => `<circle cx="${p[0]}" cy="${p[1]}" r="2.3" fill="var(--green)"/>`).join("")}
+    <circle cx="${x0}" cy="${y0}" r="5.5" fill="#0c0c0c" stroke="var(--green)" stroke-width="2"/>
+    <circle cx="${x1}" cy="${y1}" r="5.5" fill="#0c0c0c" stroke="var(--green)" stroke-width="2"/>`;
+}
+
+/* ---------- render ---------- */
+function renderCard(card) {
+  const { q, tab } = card;
+  const peakDn = Math.max(...S.dn), peakUp = Math.max(...S.up);
+  const scale = Math.max(peakDn, 1e6);
+  const util = Math.min(1, Math.max(S.dn.at(-1), S.up.at(-1)) * 8 / (LINK_MBPS * 1e6));
+  const head = {
+    overview: ["Netwatch", `en0<span class="dot">·</span><span style="color:var(--green)">live</span><span class="dot">·</span>388 GB free`, null],
+    network: ["Network", `en0<span class="dot">·</span>866 Mb/s<span class="dot">·</span><span style="color:var(--green)">live</span>`, null],
+    storage: ["Storage", `Macintosh HD<span class="dot">·</span>994 GB`, "30 days"],
+    settings: ["Settings", `Netwatch<span class="dot">·</span>0.1.0`, null],
+  }[tab];
+  q("[data-ic]").innerHTML = ICONS[tab];
+  q("[data-title]").textContent = head[0];
+  q("[data-sub]").innerHTML = head[1];
+  const chip = q("[data-chip]"); chip.hidden = !head[2]; chip.textContent = head[2] || "";
+
+  if (tab === "overview" || tab === "network") {
+    const pane = q(`.tab[data-tab=${tab}]`), pq = s => pane.querySelector(s);
+    pq("[data-bars]").querySelectorAll(".col").forEach((c, i) => {
+      c.querySelector(".dn").style.height = Math.max(3, S.dn[i] / scale * 62) + "px";
+      c.querySelector(".up").style.height = Math.max(2, S.up[i] / scale * 62 * 0.9) + "px";
+    });
+    const [dn, dnU] = fmtRate(S.dn.at(-1)).split(" "), [up, upU] = fmtRate(S.up.at(-1)).split(" ");
+    pq("[data-dn]").textContent = dn; pq("[data-dn-u]").textContent = dnU;
+    pq("[data-up]").textContent = up; pq("[data-up-u]").textContent = upU;
+    pq("[data-dn-peak]").textContent = fmtRate(peakDn);
+  }
+  if (tab === "network") {
+    q("[data-tot-dn]").textContent = fmtBytes(S.totDn);
+    q("[data-tot-up]").textContent = fmtBytes(S.totUp);
+    const pct = util * 100;
+    q("[data-util]").textContent = pct < 10 ? pct.toFixed(1) : pct.toFixed(0);
+
+    const sp = S.speed, running = sp.state === "running";
+    const run = q("[data-run]");
+    run.classList.toggle("pri", !running); run.classList.toggle("busy", running);
+    const el = running ? Math.round((Date.now() - sp.started) / 1000) : 0;
+    run.firstChild.textContent = running ? `Testing · ${el} s` : "Run test";
+    run.querySelector(".prog").style.width = running ? Math.min(100, el / 20 * 100) + "%" : "0";
+    q("[data-st-when]").innerHTML = running ? `<span style="color:var(--amber)">testing…</span>` : ago(Date.now() - sp.finished).toLowerCase();
+    if (!running) {
+      q("[data-st-dn]").textContent = sp.dn.toFixed(0);
+      q("[data-st-up]").textContent = sp.up.toFixed(0);
+      q("[data-st-dn-bar]").style.width = sp.dn / LINK_MBPS * 100 + "%";
+      q("[data-st-up-bar]").style.width = sp.up / LINK_MBPS * 100 + "%";
+      // networkQuality's RPM is round trips per minute under load: 60000 / RPM = ms.
+      const loaded = Math.round(60000 / sp.rpm);
+      const [label, cls] = loaded < 60 ? ["Good", "ok"] : loaded < 150 ? ["Fair", "warn"] : ["Poor", "bad"];
+      q("[data-lat]").innerHTML = `${sp.rtt} ms <span class="x">idle ·</span> ${loaded} ms <span class="x">loaded ·</span> <span class="${cls}">${label}</span>`;
+    }
+  }
+  if (tab === "settings") {
+    q("[data-int-label]").textContent = S.intervalMs === 500 ? "0.5 s" : S.intervalMs / 1000 + " s";
+    q("[data-dd]").querySelectorAll(".menu div").forEach(m => m.classList.toggle("on", +m.dataset.ms === S.intervalMs));
+    q("[data-sw-rates]").classList.toggle("on", S.showRates);
+    const spark = S.dn.slice(-24).map((v, i) => `<rect x="${i * 2}" y="${10 - v / Math.max(...S.dn) * 9}" width="1.4" height="${Math.max(.6, v / Math.max(...S.dn) * 9)}" fill="#eee"/>`).join("");
+    q("[data-mbar]").innerHTML = `
+      <span>⌘</span><span>Wi-Fi</span>
+      <span class="item">
+        ${S.showRates ? `<span class="rates">▼ ${fmtRate(S.dn.at(-1)).replace(" ", "")}<br>▲ ${fmtRate(S.up.at(-1)).replace(" ", "")}</span>` : ""}
+        <svg width="48" height="20" viewBox="0 0 48 20"><g transform="translate(0,0)">${spark}</g><rect x="0" y="15" width="48" height="3" rx="1.5" fill="#eee" opacity=".3"/><rect x="0" y="15" width="29" height="3" rx="1.5" fill="#eee"/></svg>
+      </span>
+      <span>Sun 18 Oct 9:41</span>`;
+  }
+}
+function renderAll() { cards.forEach(renderCard); }
+
+/* ---------- timers ---------- */
+let timer;
+function restartTimer() { clearInterval(timer); timer = setInterval(() => { nextSample(); renderAll(); }, S.intervalMs); }
+function runSpeedTest() {
+  if (S.speed.state === "running") return;
+  S.speed.state = "running"; S.speed.started = Date.now(); renderAll();
+  const tick = setInterval(renderAll, 250);
+  setTimeout(() => {
+    clearInterval(tick);
+    Object.assign(S.speed, { state: "done", finished: Date.now(), dn: 380 + Math.random() * 90, up: 30 + Math.random() * 14, rtt: 14 + Math.round(Math.random() * 10), rpm: 900 + Math.round(Math.random() * 700) });
+    renderAll();
+  }, 6000); // real test is ~20 s; shortened for the mock
+}
+restartTimer();
+renderAll();
+</script>
+</body>
+</html>

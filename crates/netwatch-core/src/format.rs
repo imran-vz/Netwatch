@@ -52,6 +52,12 @@ pub fn rate_compact(bytes_per_sec: f64) -> String {
     format!("{num:>3}{}", units[i])
 }
 
+/// Fixed-width (7 character) rate with its unit, for the menu bar:
+/// `  0KB/s`, ` 12KB/s`, `9.2MB/s`, `120MB/s`.
+pub fn rate_menu(bytes_per_sec: f64) -> String {
+    format!("{}B/s", rate_compact(bytes_per_sec))
+}
+
 /// Link speed: `1 Gbps`, `866 Mbps`, `2.5 Gbps`.
 pub fn bits_per_sec(bps: u64) -> String {
     let units = ["bps", "Kbps", "Mbps", "Gbps", "Tbps"];
@@ -76,6 +82,26 @@ pub fn percent(fraction: f64) -> String {
         "<1%".into()
     } else {
         format!("{:.0}%", p.round())
+    }
+}
+
+/// A change in size: `+1.23 GB`, `−340 MB`, `±0 B`.
+pub fn bytes_delta(delta: i64) -> String {
+    let sign = match delta.signum() {
+        1 => "+",
+        -1 => "−",
+        _ => "±",
+    };
+    format!("{sign}{}", bytes(delta.unsigned_abs()))
+}
+
+/// A coarse span of time: `45 s`, `12 min`, `5 h`, `3 d`.
+pub fn span(secs: u64) -> String {
+    match secs {
+        0..60 => format!("{secs} s"),
+        60..3_600 => format!("{} min", secs / 60),
+        3_600..86_400 => format!("{} h", secs / 3_600),
+        _ => format!("{} d", secs / 86_400),
     }
 }
 
@@ -111,6 +137,7 @@ mod tests {
         ] {
             assert_eq!(rate_compact(v), s);
             assert_eq!(rate_compact(v).chars().count(), 4);
+            assert_eq!(rate_menu(v), format!("{s}B/s"));
         }
     }
 
@@ -126,5 +153,16 @@ mod tests {
         assert_eq!(percent(0.0), "0%");
         assert_eq!(percent(0.004), "<1%");
         assert_eq!(percent(0.426), "43%");
+    }
+
+    #[test]
+    fn formats_deltas_and_spans() {
+        assert_eq!(bytes_delta(1_234_000_000), "+1.23 GB");
+        assert_eq!(bytes_delta(-340_000_000), "−340 MB");
+        assert_eq!(bytes_delta(0), "±0 B");
+        assert_eq!(span(45), "45 s");
+        assert_eq!(span(720), "12 min");
+        assert_eq!(span(5 * 3_600 + 10), "5 h");
+        assert_eq!(span(3 * 86_400), "3 d");
     }
 }

@@ -1,5 +1,5 @@
-//! The menu-bar status item: a live icon (rates, graph, storage bar) and a
-//! menu with the current numbers and preferences.
+//! The menu-bar status item: a live icon (rates, graph, storage bar), a
+//! tooltip with the numbers, and a menu with the preferences.
 //!
 //! Left click toggles the dashboard; right click opens the menu. The native
 //! tray is main-thread-only and lives in [`NATIVE`]; its event handlers run
@@ -47,27 +47,10 @@ impl MenuAction {
     }
 }
 
-/// Text of the read-only status lines at the top of the menu.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct StatusLines {
-    pub rates: String,
-    pub link: String,
-    pub disk: String,
-}
-
-pub fn status_lines(m: &Monitor) -> StatusLines {
+/// Hover text for the status item: current rates and free space.
+pub fn tooltip(m: &Monitor) -> String {
     let r = m.rates();
     let rates = format!("↓ {}    ↑ {}", format::rate(r.down), format::rate(r.up));
-    let link = match &r.link {
-        Some(l) if l.capacity_bps > 0 => format!(
-            "{} · {} link · {} in use",
-            l.name,
-            format::bits_per_sec(l.capacity_bps),
-            format::percent(r.utilization().unwrap_or(0.0))
-        ),
-        Some(l) => format!("{} · link speed unknown", l.name),
-        None => "No active network connection".into(),
-    };
     let disk = match m.disk() {
         Some(d) => format!(
             "Disk: {} free of {} ({} used)",
@@ -77,7 +60,7 @@ pub fn status_lines(m: &Monitor) -> StatusLines {
         ),
         None => "Disk: unavailable".into(),
     };
-    StatusLines { rates, link, disk }
+    format!("{rates}\n{disk}")
 }
 
 pub fn interval_label(ms: u64) -> String {
@@ -90,14 +73,11 @@ pub fn interval_label(ms: u64) -> String {
 
 struct Native {
     tray: tray_icon::TrayIcon,
-    rates: MenuItem,
-    link: MenuItem,
-    disk: MenuItem,
     intervals: Vec<(u64, CheckMenuItem)>,
     show_rates: CheckMenuItem,
     renderer: IconRenderer,
     last_icon: Option<netwatch_core::icon::Bitmap>,
-    last_lines: Option<StatusLines>,
+    last_tooltip: Option<String>,
 }
 
 thread_local! {
@@ -106,9 +86,6 @@ thread_local! {
 
 /// Create the status item. Must run on the main thread.
 pub fn build(settings: &Settings, events: smol::channel::Sender<TrayEvent>) -> anyhow::Result<()> {
-    let rates = MenuItem::new("", false, None);
-    let link = MenuItem::new("", false, None);
-    let disk = MenuItem::new("", false, None);
     let intervals: Vec<(u64, CheckMenuItem)> = INTERVALS_MS
         .iter()
         .map(|&ms| {
@@ -135,10 +112,6 @@ pub fn build(settings: &Settings, events: smol::channel::Sender<TrayEvent>) -> a
     );
     let menu = Menu::new();
     menu.append_items(&[
-        &rates,
-        &link,
-        &disk,
-        &PredefinedMenuItem::separator(),
         &MenuItem::with_id(MenuAction::OpenDashboard.id(), "Open Dashboard", true, None),
         &refresh,
         &show_rates,
@@ -181,20 +154,17 @@ pub fn build(settings: &Settings, events: smol::channel::Sender<TrayEvent>) -> a
     NATIVE.with(|n| {
         *n.borrow_mut() = Some(Native {
             tray,
-            rates,
-            link,
-            disk,
             intervals,
             show_rates,
             renderer,
             last_icon: None,
-            last_lines: None,
+            last_tooltip: None,
         })
     });
     Ok(())
 }
 
-/// Redraw the icon and refresh the menu from the latest sample. Only touches
+/// Redraw the icon, tooltip and menu checkmarks from the latest sample. Only touches
 /// the native tray for parts that changed.
 pub fn update(monitor: &Monitor, settings: &Settings) {
     NATIVE.with(|n| {
@@ -225,15 +195,10 @@ pub fn update(monitor: &Monitor, settings: &Settings) {
             Err(e) => log::warn!("Rendering the tray icon failed: {e}"),
         }
 
-        let lines = status_lines(monitor);
-        if n.last_lines.as_ref() != Some(&lines) {
-            n.rates.set_text(&lines.rates);
-            n.link.set_text(&lines.link);
-            n.disk.set_text(&lines.disk);
-            n.tray
-                .set_tooltip(Some(format!("{}\n{}", lines.rates, lines.disk)))
-                .ok();
-            n.last_lines = Some(lines);
+        let tip = tooltip(monitor);
+        if n.last_tooltip.as_ref() != Some(&tip) {
+            n.tray.set_tooltip(Some(&tip)).ok();
+            n.last_tooltip = Some(tip);
         }
 
         for (ms, item) in &n.intervals {
@@ -272,7 +237,7 @@ mod tests {
     }
 
     #[test]
-    fn status_lines_describe_rates_link_and_disk() {
+    fn tooltip_shows_rates_and_disk() {
         let iface = |rx| InterfaceCounters {
             name: "en0".into(),
             up: true,
@@ -292,13 +257,13 @@ mod tests {
         };
         m.tick_with(t0, &[iface(0)], disk);
         m.tick_with(t0 + Duration::from_secs(1), &[iface(12_500_000)], disk);
-        let l = status_lines(&m);
-        assert_eq!(l.rates, "↓ 12.5 MB/s    ↑ 0 B/s");
-        assert_eq!(l.link, "en0 · 1 Gbps link · 10% in use");
-        assert_eq!(l.disk, "Disk: 200 GB free of 500 GB (60% used)");
-
-        let empty = status_lines(&Monitor::new(10));
-        assert_eq!(empty.link, "No active network connection");
-        assert_eq!(empty.disk, "Disk: unavailable");
+        assert_eq!(
+            tooltip(&m),
+            "↓ 12.5 MB/s    ↑ 0 B/s\nDisk: 200 GB free of 500 GB (60% used)"
+        );
+        assert_eq!(
+            tooltip(&Monitor::new(10)),
+            "↓ 0 B/s    ↑ 0 B/s\nDisk: unavailable"
+        );
     }
 }

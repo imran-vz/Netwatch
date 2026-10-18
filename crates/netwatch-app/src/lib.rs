@@ -7,6 +7,7 @@ pub mod placement;
 pub mod stats;
 pub mod theme;
 pub mod tray;
+pub mod ui;
 
 use crate::stats::{Stats, StatsGlobal};
 use crate::tray::{MenuAction, TrayEvent};
@@ -47,9 +48,21 @@ pub fn run() {
             }
             spawn_tray_events(rx, cx);
             // Debug builds: open the dashboard at launch, for checking it
-            // without clicking the status item.
+            // without clicking the status item. NETWATCH_DEV_TAB picks the
+            // tab (overview, network, storage, settings) and
+            // NETWATCH_DEV_SPEED_TEST starts a speed test; NETWATCH_DEV_PIN
+            // keeps it open when focus moves away.
             #[cfg(debug_assertions)]
             if std::env::var_os("NETWATCH_DEV_OPEN_DASHBOARD").is_some() {
+                if let Some(tab) = std::env::var("NETWATCH_DEV_TAB")
+                    .ok()
+                    .and_then(|t| dashboard::Tab::parse(&t))
+                {
+                    dashboard::set_tab(tab, cx);
+                }
+                if std::env::var_os("NETWATCH_DEV_SPEED_TEST").is_some() {
+                    stats.update(cx, |s, cx| s.start_speed_test(cx));
+                }
                 dashboard::open(cx);
             }
             stats::spawn_sampler(
@@ -87,7 +100,7 @@ pub fn handle_tray_event(event: TrayEvent, cx: &mut App) {
 }
 
 /// Change a setting, persist it, and redraw the tray right away.
-fn update_settings(cx: &mut App, f: impl FnOnce(&mut netwatch_core::settings::Settings)) {
+pub fn update_settings(cx: &mut App, f: impl FnOnce(&mut netwatch_core::settings::Settings)) {
     let stats = stats::stats(cx);
     stats.update(cx, |s, cx| s.update_settings(f, cx));
     let s = stats.read(cx);

@@ -14,6 +14,12 @@ pub struct Settings {
     pub interval_ms: u64,
     /// Show the download/upload rates as text next to the icon.
     pub show_rates: bool,
+    /// The storage bar turns yellow from this much used, in percent.
+    pub storage_warn_pct: u8,
+    /// ...and red from this much.
+    pub storage_danger_pct: u8,
+    /// Post a notification when storage crosses into red.
+    pub storage_notify: bool,
 }
 
 impl Default for Settings {
@@ -21,6 +27,9 @@ impl Default for Settings {
         Self {
             interval_ms: 1000,
             show_rates: true,
+            storage_warn_pct: 50,
+            storage_danger_pct: 80,
+            storage_notify: true,
         }
     }
 }
@@ -30,6 +39,68 @@ impl Settings {
     /// edited by hand.
     pub fn interval(&self) -> Duration {
         Duration::from_millis(self.interval_ms.clamp(250, 60_000))
+    }
+
+    /// The storage thresholds as fractions (yellow, red), kept in order and
+    /// in range if the file was edited by hand.
+    pub fn storage_thresholds(&self) -> (f64, f64) {
+        let danger = self.storage_danger_pct.clamp(2, 100);
+        let warn = self.storage_warn_pct.clamp(1, danger - 1);
+        (warn as f64 / 100.0, danger as f64 / 100.0)
+    }
+
+    /// Which colour the storage bar shows at `used` (0..=1).
+    pub fn storage_level(&self, used: f64) -> StorageLevel {
+        let (warn, danger) = self.storage_thresholds();
+        if used >= danger {
+            StorageLevel::Danger
+        } else if used >= warn {
+            StorageLevel::Warn
+        } else {
+            StorageLevel::Ok
+        }
+    }
+}
+
+/// Storage bar colour zones: green, yellow, red.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StorageLevel {
+    Ok,
+    Warn,
+    Danger,
+}
+
+/// Fires once each time storage crosses into red. It re-arms only after
+/// usage drops [`StorageAlarm::REARM_BELOW`] under the red threshold, so a
+/// disk hovering at the line doesn't notify over and over. The first
+/// reading never fires: an app that starts already in the red shows it in
+/// the bar instead of notifying at every login.
+#[derive(Clone, Debug, Default)]
+pub struct StorageAlarm {
+    armed: Option<bool>,
+}
+
+impl StorageAlarm {
+    pub const REARM_BELOW: f64 = 0.02;
+
+    /// Feed a reading; true when this one should notify.
+    pub fn update(&mut self, used: f64, danger: f64) -> bool {
+        let red = used >= danger;
+        match self.armed {
+            None => {
+                self.armed = Some(!red);
+                false
+            }
+            Some(true) if red => {
+                self.armed = Some(false);
+                true
+            }
+            Some(false) if used < danger - Self::REARM_BELOW => {
+                self.armed = Some(true);
+                false
+            }
+            _ => false,
+        }
     }
 }
 
@@ -74,6 +145,9 @@ mod tests {
         let s = Settings {
             interval_ms: 2000,
             show_rates: false,
+            storage_warn_pct: 60,
+            storage_danger_pct: 90,
+            storage_notify: false,
         };
         save(&path, &s).unwrap();
         assert_eq!(load(&path), s);
@@ -82,11 +156,43 @@ mod tests {
             load(&path),
             Settings {
                 interval_ms: 500,
-                show_rates: true
+                ..Default::default()
             }
         );
         std::fs::write(&path, "not json").unwrap();
         assert_eq!(load(&path), Settings::default());
+    }
+
+    #[test]
+    fn storage_levels_follow_the_thresholds() {
+        let s = Settings::default();
+        assert_eq!(s.storage_level(0.49), StorageLevel::Ok);
+        assert_eq!(s.storage_level(0.50), StorageLevel::Warn);
+        assert_eq!(s.storage_level(0.79), StorageLevel::Warn);
+        assert_eq!(s.storage_level(0.80), StorageLevel::Danger);
+        // Out of order by hand: yellow stays below red.
+        let odd = Settings {
+            storage_warn_pct: 95,
+            storage_danger_pct: 70,
+            ..Default::default()
+        };
+        assert_eq!(odd.storage_thresholds(), (0.69, 0.70));
+    }
+
+    #[test]
+    fn alarm_fires_once_per_crossing() {
+        let mut a = StorageAlarm::default();
+        assert!(!a.update(0.70, 0.80), "first reading never fires");
+        assert!(a.update(0.81, 0.80));
+        assert!(!a.update(0.82, 0.80), "still red: no repeat");
+        assert!(!a.update(0.79, 0.80), "inside the re-arm margin");
+        assert!(!a.update(0.80, 0.80));
+        assert!(!a.update(0.77, 0.80), "re-armed");
+        assert!(a.update(0.80, 0.80));
+
+        let mut started_red = StorageAlarm::default();
+        assert!(!started_red.update(0.90, 0.80));
+        assert!(!started_red.update(0.91, 0.80));
     }
 
     #[test]
