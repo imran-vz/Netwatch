@@ -30,7 +30,7 @@ The app icon's source is `assets/icons/app/netwatch.svg`. After editing it, run
 
 ## Layout
 
-It uses the same stack as Guidy: a Rust workspace, GPUI through
+It uses the same stack as [Guidy](https://github.com/imran-vz/Guidy): a Rust workspace, GPUI through
 `gpui-kit = "=0.7.3"`, `tray-icon` for the status item, objc2 for AppKit, and
 Guidy's Zed One theme and IBM Plex Sans / Lilex fonts.
 
