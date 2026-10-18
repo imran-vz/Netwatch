@@ -1,0 +1,51 @@
+[package]
+name = "netwatch-app"
+description = "Netwatch: menu-bar network and storage monitor (GPUI)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+name = "netwatch_app"
+path = "src/lib.rs"
+
+[[bin]]
+name = "netwatch"
+path = "src/main.rs"
+
+[dependencies]
+netwatch-core = { path = "../netwatch-core" }
+gpui-kit = "=0.7.3"
+tray-icon = "0.24"
+log = "0.4"
+env_logger = "0.11"
+smol = "2"
+rust-embed = "8"
+anyhow = "1"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6"
+objc2-foundation = "0.3"
+objc2-app-kit = { version = "0.3", features = ["NSScreen", "NSEvent"] }
+
+[dev-dependencies]
+gpui-kit = { version = "=0.7.3", features = ["test-support"] }
+
+# `cargo packager --release -p netwatch-app` (paths are relative to this file).
+# Unsigned: macOS gets an ad-hoc signature ("-").
+[package.metadata.packager]
+product-name = "Netwatch"
+identifier = "dev.netwatch.app"
+description = "Menu-bar network and storage monitor"
+category = "Utility"
+copyright = "Copyright (c) 2026 Imran"
+before-packaging-command = "cargo build --release -p netwatch-app"
+out-dir = "../../target/packages"
+binaries-dir = "../../target/release"
+binaries = [{ path = "netwatch", main = true }]
+icons = ["../../assets/icons/app/netwatch.png", "../../assets/icons/app/netwatch.icns"]
+
+[package.metadata.packager.macos]
+minimum-system-version = "11.0"
+info-plist-path = "../../assets/Info.plist"
+signing-identity = "-"

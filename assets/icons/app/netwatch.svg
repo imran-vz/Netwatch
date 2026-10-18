@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <!-- Netwatch app icon. Source of truth for netwatch.png and netwatch.icns;
+       regenerate them with the render_app_icon example. -->
+<defs><clipPath id="body"><rect x="100" y="100" width="824" height="824" rx="185"/></clipPath>
+<linearGradient id="bg" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#ffffff"/><stop offset="1" stop-color="#e3e7ee"/></linearGradient>
+<linearGradient id="fill" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#2f7bf6" stop-opacity="0.4"/><stop offset="1" stop-color="#2f7bf6" stop-opacity="0"/></linearGradient>
+</defs>
+<rect x="100" y="112" width="824" height="824" rx="185" fill="#000" opacity="0.25"/>
+<rect x="100" y="100" width="824" height="824" rx="185" fill="url(#bg)"/>
+<g clip-path="url(#body)">
+<path d="M100 640 C 220 640, 300 470, 410 490 S 560 650, 650 540 S 760 320, 824 330 S 900 300, 960 280 L960 924 L100 924 Z" fill="url(#fill)"/>
+<path d="M100 640 C 220 640, 300 470, 410 490 S 560 650, 650 540 S 760 320, 824 330 S 900 300, 960 280" fill="none" stroke="#2f7bf6" stroke-width="40" stroke-linecap="round"/>
+</g>
+<circle cx="824" cy="330" r="44" fill="#fff" stroke="#2f7bf6" stroke-width="28"/>
+</svg>

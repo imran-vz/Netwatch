@@ -1,0 +1,18 @@
+[workspace]
+resolver = "2"
+members = ["crates/netwatch-core", "crates/netwatch-app"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+authors = ["Imran"]
+
+[profile.dev]
+incremental = true
+
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true
+panic = "unwind"
