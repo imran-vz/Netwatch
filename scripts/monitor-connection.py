@@ -20,6 +20,7 @@ import os
 from pathlib import Path
 import re
 import signal
+import shutil
 import subprocess
 import sys
 import threading
@@ -85,6 +86,19 @@ def local_tcp(address):
     except OSError as exc:
         return {"ok": False, "elapsed_ms": round((time.monotonic() - start) * 1000),
                 "error": str(exc)}
+
+
+def tailscale_backend():
+    cli = shutil.which("tailscale")
+    if not cli:
+        return {"available": False}
+    result = command([cli, "status", "--json"], 6, 1000000)
+    try:
+        data = json.loads(result.get("output", ""))
+        return {"available": True, "ok": result["ok"], "backend_state": data.get("BackendState"),
+                "exit_node_selected": data.get("ExitNodeStatus") is not None}
+    except ValueError:
+        return {"available": True, "ok": False, "error": result.get("error", "status unavailable")}
 
 
 def wifi_events():
@@ -225,15 +239,21 @@ def main():
                         "proxy": ["/usr/sbin/scutil", "--proxy"],
                         "reachability": ["/usr/sbin/scutil", "--nwi"],
                         "extensions": ["/usr/bin/systemextensionsctl", "list"],
-                        "dhcp": ["/usr/sbin/ipconfig", "getpacket", "en0"],
                         "arp": ["/usr/sbin/arp", "-an"],
-                        "interface_counters": ["/usr/sbin/netstat", "-ibn", "-I", "en0"],
                     }
+                    active_interface = routing.get("interface")
+                    if active_interface:
+                        snapshots["dhcp"] = ["/usr/sbin/ipconfig", "getpacket", active_interface]
+                        snapshots["interface_counters"] = ["/usr/sbin/netstat", "-ibn", "-I", active_interface]
+                    warp = shutil.which("warp-cli")
+                    if warp:
+                        snapshots["warp"] = [warp, "status"]
                     futures = {k: pool.submit(command, v, 8) for k, v in snapshots.items()}
                     wifi = pool.submit(wifi_summary)
                     radio = pool.submit(wifi_events)
+                    backend = pool.submit(tailscale_backend)
                     emit("snapshot", **{k: f.result() for k, f in futures.items()}, wifi=wifi.result(),
-                         wifi_events=radio.result())
+                         wifi_events=radio.result(), tailscale_backend=backend.result())
                     last_snapshot = started
                 previous = state
                 if args.once:

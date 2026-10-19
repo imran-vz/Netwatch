@@ -20,6 +20,19 @@ pub struct Settings {
     pub storage_danger_pct: u8,
     /// Post a notification when storage crosses into red.
     pub storage_notify: bool,
+    /// Keep-awake sessions let the display sleep (only the system stays up).
+    pub awake_allow_display_sleep: bool,
+    /// Keep-awake sessions let the Mac sleep when the lid closes. Blocking
+    /// it only works on AC power.
+    pub awake_allow_closed_display_sleep: bool,
+    /// While display sleep is blocked, start the screen saver after
+    /// [`Settings::awake_screen_saver_mins`] of inactivity.
+    pub awake_screen_saver: bool,
+    pub awake_screen_saver_mins: u16,
+    /// Start an indefinite session when Netwatch launches.
+    pub awake_on_launch: bool,
+    /// Post a notification when a session ends by itself.
+    pub awake_notify_end: bool,
 }
 
 impl Default for Settings {
@@ -30,6 +43,12 @@ impl Default for Settings {
             storage_warn_pct: 50,
             storage_danger_pct: 80,
             storage_notify: true,
+            awake_allow_display_sleep: false,
+            awake_allow_closed_display_sleep: true,
+            awake_screen_saver: false,
+            awake_screen_saver_mins: 45,
+            awake_on_launch: false,
+            awake_notify_end: true,
         }
     }
 }
@@ -47,6 +66,19 @@ impl Settings {
         let danger = self.storage_danger_pct.clamp(2, 100);
         let warn = self.storage_warn_pct.clamp(1, danger - 1);
         (warn as f64 / 100.0, danger as f64 / 100.0)
+    }
+
+    /// What keep-awake sessions let the Mac do.
+    pub fn awake_allow(&self) -> crate::awake::Allow {
+        crate::awake::Allow {
+            display_sleep: self.awake_allow_display_sleep,
+            closed_display_sleep: self.awake_allow_closed_display_sleep,
+        }
+    }
+
+    /// The screen saver delay, kept sane if the file was edited by hand.
+    pub fn awake_screen_saver_after(&self) -> Duration {
+        Duration::from_secs(self.awake_screen_saver_mins.clamp(1, 24 * 60) as u64 * 60)
     }
 
     /// Which colour the storage bar shows at `used` (0..=1).
@@ -148,6 +180,12 @@ mod tests {
             storage_warn_pct: 60,
             storage_danger_pct: 90,
             storage_notify: false,
+            awake_allow_display_sleep: true,
+            awake_allow_closed_display_sleep: false,
+            awake_screen_saver: true,
+            awake_screen_saver_mins: 10,
+            awake_on_launch: true,
+            awake_notify_end: false,
         };
         save(&path, &s).unwrap();
         assert_eq!(load(&path), s);

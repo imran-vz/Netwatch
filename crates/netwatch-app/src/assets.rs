@@ -65,7 +65,11 @@ mod tests {
 
     #[test]
     fn falls_back_to_kit_icons() {
-        assert!(AppAssets.load("icons/arrow-down.svg").unwrap().is_some());
+        // Including the keep-awake ones.
+        for icon in ["arrow-down", "pill", "file-down"] {
+            let path = format!("icons/{icon}.svg");
+            assert!(AppAssets.load(&path).unwrap().is_some(), "{path}");
+        }
         assert!(
             AppAssets
                 .load("icons/definitely-missing.svg")

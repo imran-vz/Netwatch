@@ -1,5 +1,6 @@
 //! Netwatch backend. No UI and no gpui dependency.
 //!
+//! - [`awake`]: keep-awake sessions (power assertions), like Amphetamine.
 //! - [`net`]: per-interface byte counters and link speed, and the
 //!   [`net::NetMeter`] that turns two readings into rates.
 //! - [`disk`]: capacity and free space of the startup volume.
@@ -10,6 +11,7 @@
 //! - [`settings`]: the persisted preferences.
 //! - [`speedtest`]: on-demand speed test via `networkQuality`.
 
+pub mod awake;
 pub mod disk;
 pub mod disk_history;
 pub mod format;

@@ -105,6 +105,32 @@ pub fn span(secs: u64) -> String {
     }
 }
 
+/// A precise span, largest units first: `22 d 19 h 37 min`, `3 h 5 min`,
+/// `45 s`.
+pub fn span_long(secs: u64) -> String {
+    let (d, h, m) = (secs / 86_400, secs / 3_600 % 24, secs / 60 % 60);
+    if secs < 60 {
+        return format!("{secs} s");
+    }
+    let parts: Vec<String> = [(d, "d"), (h, "h"), (m, "min")]
+        .into_iter()
+        .skip_while(|(v, _)| *v == 0)
+        .filter(|(v, _)| *v > 0)
+        .map(|(v, u)| format!("{v} {u}"))
+        .collect();
+    parts.join(" ")
+}
+
+/// A countdown: `4:59`, `1:02:03`.
+pub fn countdown(secs: u64) -> String {
+    let (h, m, s) = (secs / 3_600, secs / 60 % 60, secs % 60);
+    if h > 0 {
+        format!("{h}:{m:02}:{s:02}")
+    } else {
+        format!("{m}:{s:02}")
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -164,5 +190,14 @@ mod tests {
         assert_eq!(span(720), "12 min");
         assert_eq!(span(5 * 3_600 + 10), "5 h");
         assert_eq!(span(3 * 86_400), "3 d");
+        assert_eq!(span_long(45), "45 s");
+        assert_eq!(span_long(3 * 3_600 + 5 * 60 + 9), "3 h 5 min");
+        assert_eq!(
+            span_long(22 * 86_400 + 19 * 3_600 + 37 * 60 + 47),
+            "22 d 19 h 37 min"
+        );
+        assert_eq!(span_long(86_400 + 60), "1 d 1 min");
+        assert_eq!(countdown(299), "4:59");
+        assert_eq!(countdown(3_723), "1:02:03");
     }
 }

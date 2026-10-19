@@ -1,6 +1,7 @@
-//! The dashboard popover shown under the status item, in four tabs:
-//! Overview (rates and storage at a glance), Network (link, session totals
-//! and the speed test), Storage (used space over time) and Settings.
+//! The dashboard popover shown under the status item, in five tabs:
+//! Overview (rates, storage and keep awake at a glance), Network (link, session totals
+//! and the speed test), Storage (used space over time), Awake (keep-awake
+//! sessions, see [`awake`]) and Settings.
 //! The look follows `design/dashboard-mock.html`; the pieces live in
 //! [`crate::ui`].
 
@@ -19,10 +20,12 @@ use netwatch_core::settings::{INTERVALS_MS, Settings};
 use netwatch_core::speedtest;
 use std::time::{Duration, Instant};
 
+mod awake;
+
 pub const WIDTH: f32 = ui::CARD_W + 2. * ui::SHADOW;
-/// Tall enough for the longest tab (Network); the rest of the window is
+/// Tall enough for the longest tab (Awake); the rest of the window is
 /// transparent, and clicking it closes the dashboard.
-pub const HEIGHT: f32 = 800.;
+pub const HEIGHT: f32 = 1130.;
 /// Bars in the rate graph; each covers `HISTORY_LEN / BARS` samples.
 const BARS: usize = 40;
 const CHART_H: f32 = 210.;
@@ -33,17 +36,25 @@ pub enum Tab {
     Overview,
     Network,
     Storage,
+    Awake,
     Settings,
 }
 
 impl Tab {
-    const ALL: [Tab; 4] = [Tab::Overview, Tab::Network, Tab::Storage, Tab::Settings];
+    const ALL: [Tab; 5] = [
+        Tab::Overview,
+        Tab::Network,
+        Tab::Storage,
+        Tab::Awake,
+        Tab::Settings,
+    ];
 
     fn label(self) -> &'static str {
         match self {
             Tab::Overview => "Overview",
             Tab::Network => "Network",
             Tab::Storage => "Storage",
+            Tab::Awake => "Awake",
             Tab::Settings => "Settings",
         }
     }
@@ -115,6 +126,7 @@ struct Snapshot {
     disk: Option<DiskUsage>,
     disk_samples: Vec<DiskSample>,
     speed_test: SpeedTest,
+    awake: awake::Snapshot,
 }
 
 impl Snapshot {
@@ -130,6 +142,7 @@ impl Snapshot {
             disk,
             disk_samples: stats.disk_history.with_live(disk_history::unix_now(), disk),
             speed_test: stats.speed_test.clone(),
+            awake: awake::Snapshot::read(stats),
         }
     }
 
@@ -266,6 +279,10 @@ impl Dashboard {
                     .map(|(a, b)| SharedString::from(format::span(b.at - a.at)));
                 ("hard-drive", "Storage".into(), parts, chip)
             }
+            Tab::Awake => {
+                let (title, parts) = awake::header(s);
+                ("pill", title, parts, None)
+            }
             Tab::Settings => (
                 "sliders-horizontal",
                 "Settings".into(),
@@ -307,6 +324,8 @@ impl Dashboard {
             .gap(px(22.))
             .child(rates_section(s))
             .child(storage_section(s))
+            .child(ui::separator())
+            .child(awake::overview_section(s))
     }
 
     fn network(&self, s: &Snapshot, cx: &mut Context<Self>) -> Div {
@@ -977,6 +996,7 @@ impl Render for Dashboard {
             Tab::Overview => self.overview(&s),
             Tab::Network => self.network(&s, cx),
             Tab::Storage => self.storage(&s, cx),
+            Tab::Awake => awake::tab(&s, cx),
             Tab::Settings => self.settings(&s, cx),
         };
         let card = ui::card(
@@ -1010,6 +1030,8 @@ struct DashboardWindow {
     /// same way.
     tab: Tab,
     speed_test_open: bool,
+    /// The Awake tab's custom length and end time.
+    awake: awake::Picks,
 }
 
 impl Global for DashboardWindow {}
@@ -1033,6 +1055,15 @@ fn dismiss(window: &mut Window, cx: &mut App) {
 /// The tab the dashboard opens on next.
 pub fn set_tab(tab: Tab, cx: &mut App) {
     state(cx).tab = tab;
+}
+
+/// Open the dashboard on `tab`, switching tabs if it's already open.
+pub fn open_on(tab: Tab, cx: &mut App) {
+    set_tab(tab, cx);
+    if let Some(handle) = state(cx).handle {
+        let _ = handle.update(cx, |d, _, cx| d.set_tab(tab, cx));
+    }
+    open(cx);
 }
 
 pub fn is_open(cx: &mut App) -> bool {
@@ -1160,6 +1191,8 @@ mod tests {
     #[test]
     fn tabs_cycle() {
         assert_eq!(Tab::Overview.next(), Tab::Network);
+        assert_eq!(Tab::Storage.next(), Tab::Awake);
+        assert_eq!(Tab::parse("awake"), Some(Tab::Awake));
         assert_eq!(Tab::Settings.next(), Tab::Overview);
         assert_eq!(Tab::Storage.index(), 2);
         assert_eq!(Tab::parse("settings"), Some(Tab::Settings));

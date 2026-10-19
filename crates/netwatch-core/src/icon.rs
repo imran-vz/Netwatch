@@ -7,6 +7,8 @@
 //!  ▲ 1.4MB/s   ██████░░░░░░   storage: solid = used, translucent = free
 //! ```
 //!
+//! A keep-awake session adds a small pill on the left.
+//!
 //! The image is drawn in black with varying alpha and shown as a macOS
 //! *template* image, so the menu bar tints it for light and dark mode.
 
@@ -25,6 +27,8 @@ pub const GRAPH_WIDTH_PT: f32 = SLOTS as f32 * BAR_PITCH - (BAR_PITCH - BAR_W);
 /// Width of the rate text column, when shown, including the gap before the
 /// graph. Fits the arrows and seven monospace characters (`9.2MB/s`).
 pub const TEXT_WIDTH_PT: f32 = 47.0;
+/// Width of the keep-awake pill column, when shown, including its gap.
+pub const AWAKE_WIDTH_PT: f32 = 8.0;
 /// Monospace family used for the rate text (embedded by the app).
 pub const FONT_FAMILY: &str = "Lilex";
 /// Below this peak the graph stays low, so idle chatter (a few KB/s) doesn't
@@ -61,6 +65,8 @@ pub struct TrayContent<'a> {
     pub rates: Option<(f64, f64)>,
     /// Occupied fraction of the startup volume; `None` hides the bar.
     pub disk_used: Option<f64>,
+    /// A keep-awake session is running: show the pill.
+    pub awake: bool,
 }
 
 impl TrayContent<'_> {
@@ -71,6 +77,7 @@ impl TrayContent<'_> {
             } else {
                 0.0
             }
+            + if self.awake { AWAKE_WIDTH_PT } else { 0.0 }
     }
 }
 
@@ -100,8 +107,18 @@ pub fn tray_svg(content: &TrayContent) -> String {
         s,
         r#"<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{HEIGHT_PT}" viewBox="0 0 {width} {HEIGHT_PT}" fill="black">"#
     );
+    if content.awake {
+        // A capsule standing upright: solid top, translucent bottom, a gap
+        // between (template images are black only, so no white stripe).
+        s.push_str(
+            r#"<clipPath id="p"><rect x="0.75" y="3.5" width="5" height="11" rx="2.5"/></clipPath><g clip-path="url(#p)"><rect x="0.75" y="3.5" width="5" height="5.1"/><rect x="0.75" y="9.4" width="5" height="5.1" fill-opacity="0.55"/></g>"#,
+        );
+    }
     if let Some((down, up)) = content.rates {
+        let tx = if content.awake { AWAKE_WIDTH_PT } else { 0.0 };
+        let _ = write!(s, r#"<g transform="translate({tx} 0)">"#);
         text_column(&mut s, down, up);
+        s.push_str("</g>");
     }
     let full = BARS_BOTTOM - BARS_TOP;
     for (i, h) in bar_heights(content.points, MIN_PEAK)
@@ -244,6 +261,25 @@ mod tests {
         assert!(svg.contains(r#"fill-opacity="0.3""#));
     }
 
+    #[test]
+    fn awake_pill_sits_left_of_the_text() {
+        let content = TrayContent {
+            rates: Some((0.0, 0.0)),
+            awake: true,
+            ..Default::default()
+        };
+        assert_eq!(
+            content.width(),
+            AWAKE_WIDTH_PT + TEXT_WIDTH_PT + GRAPH_WIDTH_PT
+        );
+        let svg = tray_svg(&content);
+        assert!(svg.contains(r#"clip-path="url(#p)""#));
+        assert!(svg.contains(&format!(r#"translate({AWAKE_WIDTH_PT} 0)"#)));
+        let bmp = IconRenderer::new([]).tray_icon(&content, 2.0).unwrap();
+        assert_eq!(alpha_at(&bmp, 6, 10), 255, "solid top half");
+        assert!(bmp.rgba.chunks(4).all(|c| c[3] == 0 || c[..3] == [0, 0, 0]));
+    }
+
     fn lilex() -> Vec<u8> {
         let path = concat!(
             env!("CARGO_MANIFEST_DIR"),
@@ -263,6 +299,7 @@ mod tests {
             points: &pts,
             rates: None,
             disk_used: Some(0.75),
+            awake: false,
         };
         let bmp = IconRenderer::new([]).tray_icon(&content, 2.0).unwrap();
         let w = (GRAPH_WIDTH_PT * 2.0).round() as u32;
@@ -285,6 +322,7 @@ mod tests {
             points: &[],
             rates: Some((1_200_000.0, 30_000.0)),
             disk_used: None,
+            awake: false,
         };
         let svg = tray_svg(&content);
         assert!(

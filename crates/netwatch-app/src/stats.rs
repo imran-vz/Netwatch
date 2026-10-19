@@ -1,8 +1,11 @@
 //! The app's model: the sampling [`Monitor`], settings, the stored disk
-//! history and the speed test. Views observe it; [`spawn_sampler`] advances
+//! history, the speed test and keep-awake sessions. Views observe it; [`spawn_sampler`] advances
 //! it on a timer.
 
 use gpui_kit::*;
+use netwatch_core::awake::{
+    self, Activation, Assertions, KeepAwake, Kind, Mode, ScreenSaverGate, Session, Signals,
+};
 use netwatch_core::disk_history::{self, DiskHistory};
 use netwatch_core::monitor::Monitor;
 use netwatch_core::settings::{self, Settings, StorageAlarm};
@@ -10,7 +13,7 @@ use netwatch_core::speedtest::{self, SpeedTestResult};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 #[derive(Clone, Debug, Default)]
 pub enum SpeedTest {
@@ -38,11 +41,19 @@ pub struct Stats {
     /// What the speed test showed before the current run, restored on cancel.
     speed_test_before: SpeedTest,
     storage_alarm: StorageAlarm,
+    pub keep_awake: KeepAwake,
+    awake_path: Option<PathBuf>,
+    /// Held while a keep-awake session runs.
+    assertions: Assertions,
+    screen_saver: ScreenSaverGate,
+    /// Watched by "While File Is Downloading".
+    downloads_dir: Option<PathBuf>,
 }
 
 impl Stats {
     pub fn new(settings: Settings, settings_path: Option<PathBuf>) -> Self {
         let disk_history_path = disk_history::default_path();
+        let awake_path = awake::default_path();
         Self {
             monitor: Monitor::default(),
             settings,
@@ -56,14 +67,40 @@ impl Stats {
             speed_test_cancel: None,
             speed_test_before: SpeedTest::Idle,
             storage_alarm: StorageAlarm::default(),
+            keep_awake: KeepAwake::with_total(
+                awake_path
+                    .as_deref()
+                    .map(awake::load_total)
+                    .unwrap_or_default(),
+            ),
+            awake_path,
+            assertions: Assertions::default(),
+            screen_saver: ScreenSaverGate::default(),
+            downloads_dir: awake::downloads_dir(),
         }
     }
 
-    /// Sample the OS counters, and store disk usage when a sample is due.
-    /// Returns a notification to post when storage just crossed into red.
-    pub fn tick(&mut self, now: Instant) -> Option<SystemNotification> {
+    /// Sample the OS counters, advance the keep-awake session, and store
+    /// disk usage when a sample is due. Returns notifications to post: storage
+    /// just crossed into red, or a session ended by itself.
+    pub fn tick(&mut self, now: Instant) -> Vec<SystemNotification> {
         self.monitor.tick(now);
-        let alert = self.storage_alert();
+        let mut alerts = Vec::new();
+        let signals = self.awake_signals();
+        if self.keep_awake.tick(now, &signals) {
+            log::info!("Keep-awake session ended");
+            if self.settings.awake_notify_end {
+                alerts.push(SystemNotification {
+                    tag: "awake-ended".into(),
+                    title: "Keep-awake session ended".into(),
+                    body: "Your Mac can sleep normally again.".into(),
+                    actions: Vec::new(),
+                });
+            }
+        }
+        self.sync_awake();
+        self.screen_saver_check();
+        alerts.extend(self.storage_alert());
         if let Some(disk) = self.monitor.disk()
             && self.disk_history.record(disk_history::unix_now(), disk)
             && let Some(path) = &self.disk_history_path
@@ -71,7 +108,42 @@ impl Stats {
         {
             log::warn!("Saving disk history failed: {e}");
         }
-        alert
+        alerts
+    }
+
+    /// Only what the running session's mode needs is looked up.
+    fn awake_signals(&self) -> Signals {
+        let mode = self.keep_awake.session().map(|s| s.mode);
+        Signals {
+            down_rate: self.monitor.rates().down,
+            file_downloading: mode == Some(Mode::WhileFileDownloading)
+                && self
+                    .downloads_dir
+                    .as_deref()
+                    .is_some_and(awake::downloads_in_progress),
+            app_running: matches!(mode, Some(Mode::WhileApp(pid)) if awake::process_alive(pid)),
+        }
+    }
+
+    /// "Allow screen saver after N min": blocking display sleep also blocks
+    /// the screen saver, so start it ourselves once the user is idle that
+    /// long.
+    fn screen_saver_check(&mut self) {
+        let watching = self.keep_awake.is_active()
+            && !self.settings.awake_allow_display_sleep
+            && self.settings.awake_screen_saver;
+        let idle = if watching {
+            awake::idle_time()
+        } else {
+            Duration::ZERO
+        };
+        if self
+            .screen_saver
+            .update(idle, self.settings.awake_screen_saver_after())
+        {
+            log::info!("Idle for {} s; starting the screen saver", idle.as_secs());
+            awake::start_screen_saver();
+        }
     }
 
     fn storage_alert(&mut self) -> Option<SystemNotification> {
@@ -143,8 +215,59 @@ impl Stats {
         cx.notify();
     }
 
+    /// Start a keep-awake session, replacing a running one. `subject` names
+    /// the app for [`Mode::WhileApp`].
+    pub fn start_keep_awake(
+        &mut self,
+        mode: Mode,
+        activation: Activation,
+        subject: Option<String>,
+        cx: &mut Context<Self>,
+    ) {
+        self.keep_awake.start(Session::new(
+            mode,
+            activation,
+            subject,
+            Instant::now(),
+            awake::local_secs_of_day(),
+        ));
+        self.sync_awake();
+        cx.notify();
+    }
+
+    pub fn stop_keep_awake(&mut self, cx: &mut Context<Self>) {
+        self.keep_awake.stop(Instant::now());
+        self.sync_awake();
+        cx.notify();
+    }
+
+    /// On quit: end the session so its last stretch is saved, and release
+    /// the assertion.
+    pub fn shutdown(&mut self) {
+        self.keep_awake.stop(Instant::now());
+        self.sync_awake();
+    }
+
+    /// Hold the power assertions the session and settings call for, and
+    /// save the awake total when due.
+    fn sync_awake(&mut self) {
+        let want = if self.keep_awake.is_active() {
+            Kind::needed(self.settings.awake_allow())
+        } else {
+            Vec::new()
+        };
+        self.assertions.sync(&want);
+        if self.keep_awake.take_save_due()
+            && let Some(path) = &self.awake_path
+            && let Err(e) = awake::save_total(path, self.keep_awake.total())
+        {
+            log::warn!("Saving the awake total failed: {e}");
+        }
+    }
+
     pub fn update_settings(&mut self, f: impl FnOnce(&mut Settings), cx: &mut Context<Self>) {
         f(&mut self.settings);
+        self.sync_awake();
         if let Some(path) = &self.settings_path
             && let Err(e) = settings::save(path, &self.settings)
         {
@@ -172,13 +295,13 @@ pub fn spawn_sampler(
     cx.spawn(async move |cx| {
         loop {
             let interval = cx.update(|cx| {
-                let alert = stats.update(cx, |s, cx| {
-                    let alert = s.tick(Instant::now());
+                let alerts = stats.update(cx, |s, cx| {
+                    let alerts = s.tick(Instant::now());
                     cx.notify();
-                    alert
+                    alerts
                 });
-                if let Some(alert) = alert {
-                    log::info!("Storage crossed into red; notifying");
+                for alert in alerts {
+                    log::info!("Notifying: {}", alert.title);
                     cx.show_system_notification(alert);
                 }
                 on_tick(&stats, cx);

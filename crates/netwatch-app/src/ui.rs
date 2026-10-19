@@ -241,6 +241,7 @@ pub fn header(
 
 /// A row of equal segments; `on` is the selected index.
 pub fn segmented(segments: Vec<Stateful<Div>>, on: usize) -> Div {
+    let count = segments.len();
     let mut row = h_flex()
         .h(px(44.))
         .p(px(3.))
@@ -258,7 +259,8 @@ pub fn segmented(segments: Vec<Stateful<Div>>, on: usize) -> Div {
                 .justify_center()
                 .rounded(px(9.))
                 .border_1()
-                .text_size(px(15.))
+                // Five tabs only fit at a smaller size.
+                .text_size(px(if count > 4 { 13.5 } else { 15. }))
                 .cursor_pointer()
                 .when(selected, |s| {
                     s.bg(raised())

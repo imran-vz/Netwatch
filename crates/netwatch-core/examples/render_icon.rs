@@ -36,6 +36,8 @@ fn main() -> anyhow::Result<()> {
         points: &points,
         rates: Some((r.down, r.up)),
         disk_used: m.disk().map(|d| d.used_fraction()),
+        // NETWATCH_AWAKE=1 previews the keep-awake pill.
+        awake: std::env::var_os("NETWATCH_AWAKE").is_some(),
     };
     let bmp = IconRenderer::new([font]).tray_icon(&content, 4.0)?;
     let size = IntSize::from_wh(bmp.width, bmp.height).unwrap();
