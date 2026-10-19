@@ -69,6 +69,8 @@ pub struct Dashboard {
     interval_menu_open: bool,
     /// Whether the speed test section on Network is unfolded.
     speed_test_open: bool,
+    /// Pointer x over the storage chart, in design units from its left edge.
+    storage_hover: Option<f32>,
     _subscriptions: [Subscription; 2],
 }
 
@@ -88,6 +90,7 @@ impl Dashboard {
             tab: state(cx).tab,
             speed_test_open: state(cx).speed_test_open,
             interval_menu_open: false,
+            storage_hover: None,
             _subscriptions: [observe, activation],
         }
     }
@@ -95,6 +98,7 @@ impl Dashboard {
     fn set_tab(&mut self, tab: Tab, cx: &mut Context<Self>) {
         self.tab = tab;
         self.interval_menu_open = false;
+        self.storage_hover = None;
         state(cx).tab = tab;
         cx.notify();
     }
@@ -378,10 +382,14 @@ impl Dashboard {
         })
     }
 
-    fn storage(&self, s: &Snapshot) -> Div {
+    fn storage(&self, s: &Snapshot, cx: &mut Context<Self>) -> Div {
         v_flex()
             .gap(px(22.))
-            .child(storage_chart(s))
+            .child(storage_chart(
+                s,
+                self.storage_hover,
+                cx.entity().downgrade(),
+            ))
             .child(storage_section(s))
     }
 
@@ -723,12 +731,38 @@ fn speed_test_button(state: &SpeedTest, cx: &mut Context<Dashboard>) -> Div {
         }
         _ => ui::button("speed-test", "Run test", true).on_click(start),
     };
-    h_flex().child(button)
+    let running = matches!(state, SpeedTest::Running { .. });
+    h_flex()
+        .gap(px(10.))
+        .child(button)
+        .when(running, |row| row.child(cancel_button()))
+}
+
+/// Square red ✕ beside the running test's button; stops the test.
+fn cancel_button() -> Stateful<Div> {
+    div()
+        .id("speed-test-cancel")
+        .flex_none()
+        .size(px(43.))
+        .flex()
+        .items_center()
+        .justify_center()
+        .rounded(px(12.))
+        .border_1()
+        .border_color(danger().opacity(0.45))
+        .bg(danger().opacity(0.12))
+        .cursor_pointer()
+        .hover(|s| s.bg(danger().opacity(0.22)))
+        .child(ui::icon("x", 18., danger()))
+        .on_click(|_, _, cx| {
+            stats::stats(cx).update(cx, |s, cx| s.cancel_speed_test(cx));
+        })
 }
 
 /// Used space over the stored history: the line, a dashed straight trend
-/// from first to last, and the two end values.
-fn storage_chart(s: &Snapshot) -> Div {
+/// from first to last, and the two end values. Hovering shows the sample
+/// nearest the pointer.
+fn storage_chart(s: &Snapshot, hover: Option<f32>, view: WeakEntity<Dashboard>) -> Div {
     const PAD_X: f32 = 24.;
     const PAD_TOP: f32 = 30.;
     const PAD_BOTTOM: f32 = 40.;
@@ -773,10 +807,31 @@ fn storage_chart(s: &Snapshot) -> Div {
         "avg {}/{unit}",
         format::bytes_delta((delta * per / span as f64) as i64)
     );
+    // Sample nearest the pointer, and its point on the line.
+    let hovered = hover.and_then(|hx| {
+        let i = (0..pts.len())
+            .min_by(|&a, &b| (pts[a].0 - hx).abs().total_cmp(&(pts[b].0 - hx).abs()))?;
+        Some((s.disk_samples[i], pts[i]))
+    });
+    let hover_pt = hovered.map(|(_, p)| p);
 
     let plot = canvas(
         |_, _, _| (),
         move |bounds, _, window, _| {
+            window.on_mouse_event(move |e: &MouseMoveEvent, phase, _, cx| {
+                if phase != DispatchPhase::Bubble {
+                    return;
+                }
+                let x = bounds
+                    .contains(&e.position)
+                    .then(|| (e.position.x - bounds.origin.x).as_f32() / ui::SCALE);
+                let _ = view.update(cx, |d, cx| {
+                    if d.storage_hover != x {
+                        d.storage_hover = x;
+                        cx.notify();
+                    }
+                });
+            });
             let at = |(x, y): (f32, f32)| bounds.origin + point(px(x), px(y));
             let (bw, bh) = (
                 bounds.size.width.as_f32() / ui::SCALE,
@@ -812,6 +867,12 @@ fn storage_chart(s: &Snapshot) -> Div {
                 b.line_to(at(to));
                 b.build().ok()
             };
+            if let Some((hx, _)) = hover_pt {
+                window.paint_quad(fill(
+                    Bounds::new(at((hx - 0.5, 0.)), size(px(1.), px(bh))),
+                    rgb(0x3a3a3a),
+                ));
+            }
             // Guides at the first and last values.
             if let Some(p) = line((x0, y0), (bw - 10., y0), &[px(2.), px(4.)], 1.) {
                 window.paint_path(p, rgb(0x555555));
@@ -830,7 +891,7 @@ fn storage_chart(s: &Snapshot) -> Div {
             if let Ok(p) = b.build() {
                 window.paint_path(p, ok());
             }
-            for (cx, cy) in [(x0, y0), (x1, y1)] {
+            for (cx, cy) in [(x0, y0), (x1, y1)].into_iter().chain(hover_pt) {
                 for (r, c) in [(5.5, ok()), (3.5, rgb(0x0c0c0c).into())] {
                     window.paint_quad(
                         fill(
@@ -847,18 +908,46 @@ fn storage_chart(s: &Snapshot) -> Div {
     .inset_0();
 
     let label = |s: String| ui::mono(12., rgb(0x8a8a8a).into()).absolute().child(s);
+    // While hovering, the tooltip replaces the end labels it would collide with.
+    let tooltip = hovered.map(|(sample, (hx, hy))| {
+        const TIP_W: f32 = 150.;
+        let ago = last.at.saturating_sub(sample.at);
+        let when = if ago < 60 {
+            "now".to_string()
+        } else {
+            format!("{} ago", format::span(ago))
+        };
+        // Above the point, or below it when there's no room.
+        let top = if hy - 52. >= 4. { hy - 52. } else { hy + 14. };
+        v_flex()
+            .absolute()
+            .w(px(TIP_W))
+            .left(px((hx - TIP_W / 2.).clamp(6., w - TIP_W - 6.)))
+            .top(px(top))
+            .items_center()
+            .py(px(5.))
+            .rounded(px(7.))
+            .border_1()
+            .border_color(rgb(0x2e2e2e))
+            .bg(rgb(0x1a1a1a))
+            .child(ui::mono(12.5, fg()).child(format::bytes(sample.used)))
+            .child(ui::mono(11., fg3()).child(when))
+    });
     frame
         .child(plot)
-        .child(
-            label(format::bytes(last.used))
-                .left(px(PAD_X + 20.))
-                .top(px((y1 - 20.).max(4.))),
-        )
-        .child(
-            label(format::bytes(first.used))
-                .right(px(10.))
-                .top(px((y0 - 20.).max(4.))),
-        )
+        .when(tooltip.is_none(), |f| {
+            f.child(
+                label(format::bytes(last.used))
+                    .left(px(PAD_X + 20.))
+                    .top(px((y1 - 20.).max(4.))),
+            )
+            .child(
+                label(format::bytes(first.used))
+                    .right(px(10.))
+                    .top(px((y0 - 20.).max(4.))),
+            )
+        })
+        .children(tooltip)
         .child(
             h_flex()
                 .absolute()
@@ -887,7 +976,7 @@ impl Render for Dashboard {
         let body = match self.tab {
             Tab::Overview => self.overview(&s),
             Tab::Network => self.network(&s, cx),
-            Tab::Storage => self.storage(&s),
+            Tab::Storage => self.storage(&s, cx),
             Tab::Settings => self.settings(&s, cx),
         };
         let card = ui::card(

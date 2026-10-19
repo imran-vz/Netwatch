@@ -4,6 +4,7 @@
 use serde::Deserialize;
 use std::io::Read;
 use std::process::{Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 pub const TOOL: &str = "/usr/bin/networkQuality";
@@ -54,8 +55,8 @@ pub fn is_available() -> bool {
 }
 
 /// Run a full test. Blocks for up to [`WATCHDOG`]; call it off the main
-/// thread.
-pub fn run() -> anyhow::Result<SpeedTestResult> {
+/// thread. Setting `cancel` kills the tool within a poll interval.
+pub fn run(cancel: &AtomicBool) -> anyhow::Result<SpeedTestResult> {
     if !is_available() {
         anyhow::bail!("needs macOS 12 or later");
     }
@@ -75,6 +76,11 @@ pub fn run() -> anyhow::Result<SpeedTestResult> {
     let status = loop {
         if let Some(status) = child.try_wait()? {
             break status;
+        }
+        if cancel.load(Ordering::Relaxed) {
+            let _ = child.kill();
+            let _ = child.wait();
+            anyhow::bail!("cancelled");
         }
         if started.elapsed() >= WATCHDOG {
             let _ = child.kill();
