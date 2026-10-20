@@ -31,19 +31,32 @@ pub struct SpeedTestResult {
 
 #[derive(Deserialize)]
 struct Output {
-    dl_throughput: f64,
-    ul_throughput: f64,
+    dl_throughput: Option<f64>,
+    ul_throughput: Option<f64>,
     base_rtt: Option<f64>,
     responsiveness: Option<f64>,
     interface_name: Option<String>,
+    error_code: Option<i64>,
+    error_domain: Option<String>,
 }
 
 /// Parse the tool's `-c` (JSON) output.
 pub fn parse(json: &[u8]) -> anyhow::Result<SpeedTestResult> {
-    let o: Output = serde_json::from_slice(json)?;
+    let o: Output = serde_json::from_slice(json)
+        .map_err(|e| anyhow::anyhow!("unexpected networkQuality output: {e}"))?;
+    // The tool can return error JSON with a successful process exit status.
+    if let Some(code) = o.error_code.filter(|code| *code != 0) {
+        anyhow::bail!(
+            "networkQuality failed ({}, code {code})",
+            o.error_domain.as_deref().unwrap_or("unknown error domain")
+        );
+    }
+    let (Some(down), Some(up)) = (o.dl_throughput, o.ul_throughput) else {
+        anyhow::bail!("networkQuality did not complete both speed measurements; try again");
+    };
     Ok(SpeedTestResult {
-        down_bps: o.dl_throughput.max(0.0) as u64,
-        up_bps: o.ul_throughput.max(0.0) as u64,
+        down_bps: down.max(0.0) as u64,
+        up_bps: up.max(0.0) as u64,
         idle_latency_ms: o.base_rtt,
         responsiveness_rpm: o.responsiveness,
         interface: o.interface_name,
@@ -95,7 +108,7 @@ pub fn run(cancel: &AtomicBool) -> anyhow::Result<SpeedTestResult> {
     if !status.success() {
         anyhow::bail!("networkQuality failed ({status})");
     }
-    parse(&out).map_err(|e| anyhow::anyhow!("unexpected output: {e}"))
+    parse(&out)
 }
 
 #[cfg(test)]
@@ -127,5 +140,39 @@ mod tests {
         assert_eq!(r.idle_latency_ms, None);
         assert!(parse(b"not json").is_err());
         assert!(parse(br#"{"base_rtt": 1}"#).is_err());
+    }
+
+    #[test]
+    fn reports_tool_error_instead_of_missing_throughput() {
+        // networkQuality exits successfully even when its JSON reports a failure.
+        let error = parse(
+            br#"{
+            "cli_options": ["-c", "-M", "1", "-C", "file:///dev/null"],
+            "draft_version": 8,
+            "error_code": 1000,
+            "error_domain": "NetworkQualityErrorDomain"
+        }"#,
+        )
+        .unwrap_err()
+        .to_string();
+        assert_eq!(
+            error,
+            "networkQuality failed (NetworkQualityErrorDomain, code 1000)"
+        );
+    }
+
+    #[test]
+    fn reports_incomplete_measurements_without_inventing_zero_speeds() {
+        for json in [
+            br#"{}"#.as_slice(),
+            br#"{"dl_throughput": 123}"#,
+            br#"{"ul_throughput": 456}"#,
+        ] {
+            let error = parse(json).unwrap_err().to_string();
+            assert_eq!(
+                error,
+                "networkQuality did not complete both speed measurements; try again"
+            );
+        }
     }
 }
