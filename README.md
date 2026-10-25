@@ -1,5 +1,7 @@
 # Netwatch
 
+CI is disabled. Run [local verification](docs/LOCAL_CHECKS.md) on the development device before submitting changes.
+
 A macOS menu-bar monitor for network activity and storage, which can also
 keep your Mac awake.
 
