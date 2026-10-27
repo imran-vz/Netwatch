@@ -1,4 +1,4 @@
-//! Persisted preferences: `<data dir>/dev.netwatch.app/settings.json`.
+//! Persisted preferences: `<data dir>/dev.utilify.app/settings.json`.
 
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
@@ -14,6 +14,12 @@ pub struct Settings {
     pub interval_ms: u64,
     /// Show the download/upload rates as text next to the icon.
     pub show_rates: bool,
+    /// Show a temperature next to the icon...
+    pub show_temp: bool,
+    /// ...from this sensor (a [`crate::sensors::Sensor::id`]).
+    pub menu_temp_sensor: String,
+    /// Show the fastest fan's speed next to the icon.
+    pub show_fan_rpm: bool,
     /// The storage bar turns yellow from this much used, in percent.
     pub storage_warn_pct: u8,
     /// ...and red from this much.
@@ -29,7 +35,7 @@ pub struct Settings {
     /// [`Settings::awake_screen_saver_mins`] of inactivity.
     pub awake_screen_saver: bool,
     pub awake_screen_saver_mins: u16,
-    /// Start an indefinite session when Netwatch launches.
+    /// Start an indefinite session when Utilify launches.
     pub awake_on_launch: bool,
     /// Post a notification when a session ends by itself.
     pub awake_notify_end: bool,
@@ -40,6 +46,9 @@ impl Default for Settings {
         Self {
             interval_ms: 1000,
             show_rates: true,
+            show_temp: false,
+            menu_temp_sensor: crate::sensors::CPU_AVERAGE_ID.into(),
+            show_fan_rpm: false,
             storage_warn_pct: 50,
             storage_danger_pct: 80,
             storage_notify: true,
@@ -155,14 +164,9 @@ pub fn load(path: &Path) -> Settings {
     }
 }
 
-/// Save atomically (temp file + rename).
+/// Save atomically.
 pub fn save(path: &Path, settings: &Settings) -> std::io::Result<()> {
-    if let Some(dir) = path.parent() {
-        std::fs::create_dir_all(dir)?;
-    }
-    let tmp = path.with_extension("json.tmp");
-    std::fs::write(&tmp, serde_json::to_vec_pretty(settings)?)?;
-    std::fs::rename(tmp, path)
+    crate::write_atomic(path, &serde_json::to_vec_pretty(settings)?)
 }
 
 #[cfg(test)]
@@ -177,6 +181,9 @@ mod tests {
         let s = Settings {
             interval_ms: 2000,
             show_rates: false,
+            show_temp: true,
+            menu_temp_sensor: "gpu_max".into(),
+            show_fan_rpm: true,
             storage_warn_pct: 60,
             storage_danger_pct: 90,
             storage_notify: false,

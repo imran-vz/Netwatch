@@ -1,25 +1,27 @@
 #!/usr/bin/env bash
-# Build Netwatch from this checkout and install it into /Applications.
+# Build Utilify from this checkout and install it into /Applications.
 #
 #   ./install.sh
 #
 # Environment:
-#   NETWATCH_INSTALL_DIR  where to put Netwatch.app (default /Applications,
+#   UTILIFY_INSTALL_DIR  where to put Utilify.app (default /Applications,
 #                         or ~/Applications if that isn't writable)
-#   NETWATCH_NO_LAUNCH=1  don't open the app afterwards
+#   UTILIFY_NO_LAUNCH=1  don't open the app afterwards
+#   UTILIFY_NO_FAN_HELPER=1  don't install the fan-control helper (and so
+#                         don't ask for sudo); fans stay read-only
 set -euo pipefail
 
-APP="Netwatch.app"
+APP="Utilify.app"
 
 say() { printf '\033[1m==>\033[0m %s\n' "$*"; }
 die() { printf '\033[31merror:\033[0m %s\n' "$*" >&2; exit 1; }
 
-[[ "$(uname -s)" == Darwin ]] || die "Netwatch only runs on macOS."
+[[ "$(uname -s)" == Darwin ]] || die "Utilify only runs on macOS."
 command -v cargo >/dev/null || die "cargo not found. Install Rust from https://rustup.rs and re-run."
 
 # Build the checkout this script lives in, whatever the current directory.
 cd "$(dirname "${BASH_SOURCE[0]}")"
-[[ -f crates/netwatch-app/Cargo.toml ]] || die "run this from the Netwatch source tree"
+[[ -f crates/utilify-app/Cargo.toml ]] || die "run this from the Utilify source tree"
 
 if ! command -v cargo-packager >/dev/null; then
   say "Installing cargo-packager"
@@ -27,22 +29,32 @@ if ! command -v cargo-packager >/dev/null; then
 fi
 
 say "Building $APP (release; the first build takes a few minutes)"
-cargo packager --release -p netwatch-app --formats app
+cargo packager --release -p utilify-app --formats app
 built="target/packages/$APP"
 [[ -d "$built" ]] || die "build finished but $built is missing"
 
-dest="${NETWATCH_INSTALL_DIR:-/Applications}"
-if [[ -z "${NETWATCH_INSTALL_DIR:-}" && ! -w "$dest" ]]; then
+dest="${UTILIFY_INSTALL_DIR:-/Applications}"
+if [[ -z "${UTILIFY_INSTALL_DIR:-}" && ! -w "$dest" ]]; then
   dest="$HOME/Applications"
 fi
 mkdir -p "$dest"
 
 # Replace a running copy.
+if pgrep -xq utilify; then
+  say "Quitting the running Utilify"
+  osascript -e 'quit app "Utilify"' >/dev/null 2>&1 || pkill -x utilify || true
+  sleep 1
+fi
+# Utilify was called Netwatch. Quit the old app so it stops writing to the
+# data directory Utilify moves over on first launch.
 if pgrep -xq netwatch; then
-  say "Quitting the running Netwatch"
+  say "Quitting Netwatch (now Utilify)"
   osascript -e 'quit app "Netwatch"' >/dev/null 2>&1 || pkill -x netwatch || true
   sleep 1
 fi
+for old in "$dest/Netwatch.app" "$HOME/Applications/Netwatch.app"; do
+  [[ -d "$old" ]] && say "Netwatch.app is still at $old; delete it once Utilify works"
+done
 
 say "Installing to $dest/$APP"
 rm -rf "${dest:?}/$APP"
@@ -50,9 +62,76 @@ cp -R "$built" "$dest/"
 # Clear quarantine in case the source tree was downloaded rather than cloned.
 xattr -dr com.apple.quarantine "$dest/$APP" 2>/dev/null || true
 
-if [[ "${NETWATCH_NO_LAUNCH:-}" != 1 ]]; then
+# Fan control. Setting fan speeds means writing to the SMC, which macOS only
+# allows root, so a small helper runs as a root LaunchDaemon and takes
+# requests from Utilify over a socket only admin users can open. Reading
+# fans and temperatures works without it.
+HELPER_LABEL="dev.utilify.fanhelper"
+HELPER_BIN="/Library/PrivilegedHelperTools/$HELPER_LABEL"
+HELPER_PLIST="/Library/LaunchDaemons/$HELPER_LABEL.plist"
+if [[ "${UTILIFY_NO_FAN_HELPER:-}" == 1 ]]; then
+  say "Skipping the fan helper (UTILIFY_NO_FAN_HELPER=1)"
+elif [[ "$(sysctl -n hw.optional.arm64 2>/dev/null)" != 1 ]]; then
+  say "Skipping the fan helper: fan control needs an Apple Silicon Mac"
+else
+  say "Building the fan helper (release)"
+  cargo build --release -p utilify-fanhelper
+  helper="target/release/utilify-fanhelper"
+  [[ -x "$helper" ]] || die "build finished but $helper is missing"
+
+  plist="$(mktemp -t utilify-fanhelper)"
+  cat >"$plist" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>$HELPER_LABEL</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>$HELPER_BIN</string>
+  </array>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+  <key>StandardErrorPath</key>
+  <string>/var/log/utilify-fanhelper.log</string>
+</dict>
+</plist>
+PLIST
+
+  say "Installing the fan helper as a root LaunchDaemon ($HELPER_LABEL)"
+  echo "    Setting fan speeds writes to the Mac's SMC, which only root may do, so"
+  echo "    Utilify installs a small helper that runs as root and only changes fan"
+  echo "    modes and target speeds, for admin users, returning the fans to"
+  echo "    automatic when Utilify lets go. sudo asks for your password once."
+  echo "    (Skip this with UTILIFY_NO_FAN_HELPER=1; remove it with"
+  echo "    scripts/uninstall-fan-helper.sh.)"
+  # One sudo for everything. bootout stops a running helper (which puts the
+  # fans back to automatic) so the new binary loads; bootstrap can briefly
+  # fail while the old job is still going away, so it retries.
+  if sudo /bin/bash -euc '
+      mkdir -p /Library/PrivilegedHelperTools
+      install -o root -g wheel -m 755 "$1" "$2"
+      install -o root -g wheel -m 644 "$3" "$4"
+      launchctl bootout "system/$5" 2>/dev/null || true
+      for _ in 1 2 3 4 5; do
+        launchctl bootstrap system "$4" 2>/dev/null && exit 0
+        sleep 1
+      done
+      launchctl bootstrap system "$4"
+    ' _ "$helper" "$HELPER_BIN" "$plist" "$HELPER_PLIST" "$HELPER_LABEL"; then
+    say "Fan helper running (log: /var/log/utilify-fanhelper.log)"
+  else
+    printf '\033[33mwarning:\033[0m fan helper not installed; fan control stays read-only\n' >&2
+  fi
+  rm -f "$plist"
+fi
+
+if [[ "${UTILIFY_NO_LAUNCH:-}" != 1 ]]; then
   open "$dest/$APP"
-  say "Netwatch is running: look for it in the menu bar."
+  say "Utilify is running: look for it in the menu bar."
 else
   say "Installed. Open $dest/$APP to start it."
 fi

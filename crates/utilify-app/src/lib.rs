@@ -1,5 +1,7 @@
-//! Netwatch: a menu-bar network and storage monitor. GPUI (via gpui-kit) on
-//! top of `netwatch-core`, with the status item from `tray-icon`.
+//! Utilify: menu-bar utilities for macOS. A network and storage monitor
+//! with keep awake and fan control (on top of `utilify-core`), and a CyberChef-style data
+//! workbench (on top of `utilify-chef`). GPUI via gpui-kit, with the status
+//! item from `tray-icon`.
 
 pub mod assets;
 pub mod dashboard;
@@ -9,23 +11,25 @@ pub mod system;
 pub mod theme;
 pub mod tray;
 pub mod ui;
+pub mod workbench;
 
 use crate::stats::{Stats, StatsGlobal};
 use crate::tray::{MenuAction, TrayEvent};
 use gpui_kit::*;
-use netwatch_core::awake::{Activation, Mode};
+use utilify_core::awake::{Activation, Mode};
 
 pub fn run() {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
     log::info!(
         "Starting {} v{}",
-        netwatch_core::PRODUCT_NAME,
+        utilify_core::PRODUCT_NAME,
         env!("CARGO_PKG_VERSION")
     );
-    let settings_path = netwatch_core::settings::default_path();
+    utilify_core::migrate_legacy_data();
+    let settings_path = utilify_core::settings::default_path();
     let settings = settings_path
         .as_deref()
-        .map(netwatch_core::settings::load)
+        .map(utilify_core::settings::load)
         .unwrap_or_default();
 
     gpui_kit::application()
@@ -38,8 +42,13 @@ pub fn run() {
             cx.set_activation_policy(ActivationPolicy::Accessory);
             gpui_kit::init(cx);
             theme::init(cx);
+            workbench::init(cx);
 
-            let stats = cx.new(|_| Stats::new(settings.clone(), settings_path));
+            let stats = cx.new(|cx| {
+                let mut s = Stats::new(settings.clone(), settings_path);
+                s.start_fans(cx);
+                s
+            });
             cx.set_global(StatsGlobal(stats.clone()));
             let on_quit = stats.clone();
             cx.on_app_quit(move |cx| {
@@ -59,23 +68,42 @@ pub fn run() {
                 start_keep_awake(cx, Mode::Indefinite, Activation::AtLaunch);
             }
             // Debug builds: open the dashboard at launch, for checking it
-            // without clicking the status item. NETWATCH_DEV_TAB picks the
-            // tab (overview, network, storage, settings) and
-            // NETWATCH_DEV_SPEED_TEST starts a speed test; NETWATCH_DEV_AWAKE
-            // a 30-minute keep-awake session; NETWATCH_DEV_PIN
+            // without clicking the status item. UTILIFY_DEV_TAB picks the
+            // tab (overview, network, storage, awake, fans, settings) and
+            // UTILIFY_DEV_SPEED_TEST starts a speed test; UTILIFY_DEV_AWAKE
+            // a 30-minute keep-awake session; UTILIFY_DEV_PIN
             // keeps it open when focus moves away.
+            // UTILIFY_DEV_QUIT_AFTER=<secs> quits through the normal path
+            // (fans back to automatic and all), for scripted checks.
             #[cfg(debug_assertions)]
-            if std::env::var_os("NETWATCH_DEV_OPEN_DASHBOARD").is_some() {
-                if let Some(tab) = std::env::var("NETWATCH_DEV_TAB")
+            if let Some(secs) = std::env::var("UTILIFY_DEV_QUIT_AFTER")
+                .ok()
+                .and_then(|s| s.parse::<u64>().ok())
+            {
+                cx.spawn(async move |cx| {
+                    cx.background_executor()
+                        .timer(std::time::Duration::from_secs(secs))
+                        .await;
+                    cx.update(|cx| cx.quit());
+                })
+                .detach();
+            }
+            #[cfg(debug_assertions)]
+            if std::env::var_os("UTILIFY_DEV_OPEN_WORKBENCH").is_some() {
+                workbench::open(cx);
+            }
+            #[cfg(debug_assertions)]
+            if std::env::var_os("UTILIFY_DEV_OPEN_DASHBOARD").is_some() {
+                if let Some(tab) = std::env::var("UTILIFY_DEV_TAB")
                     .ok()
                     .and_then(|t| dashboard::Tab::parse(&t))
                 {
                     dashboard::set_tab(tab, cx);
                 }
-                if std::env::var_os("NETWATCH_DEV_SPEED_TEST").is_some() {
+                if std::env::var_os("UTILIFY_DEV_SPEED_TEST").is_some() {
                     stats.update(cx, |s, cx| s.start_speed_test(cx));
                 }
-                if std::env::var_os("NETWATCH_DEV_AWAKE").is_some() {
+                if std::env::var_os("UTILIFY_DEV_AWAKE").is_some() {
                     start_keep_awake(
                         cx,
                         Mode::For(std::time::Duration::from_secs(30 * 60)),
@@ -87,8 +115,10 @@ pub fn run() {
             stats::spawn_sampler(
                 stats,
                 |stats, cx| {
-                    let s = stats.read(cx);
-                    tray::update(&s.monitor, &s.settings, &s.keep_awake);
+                    // Sensors every tick only while something shows them.
+                    let show = dashboard::is_open(cx) || stats.read(cx).settings.show_temp;
+                    stats.update(cx, |s, _| s.want_fan_sensors(show));
+                    tray::update(stats.read(cx));
                 },
                 cx,
             );
@@ -108,12 +138,26 @@ pub fn handle_tray_event(event: TrayEvent, cx: &mut App) {
     match event {
         TrayEvent::Clicked => dashboard::toggle(cx),
         TrayEvent::Menu(MenuAction::OpenDashboard) => dashboard::open(cx),
+        TrayEvent::Menu(MenuAction::OpenWorkbench) => workbench::open(cx),
         TrayEvent::Menu(MenuAction::Quit) => cx.quit(),
         TrayEvent::Menu(MenuAction::SetInterval(ms)) => {
             update_settings(cx, |s| s.interval_ms = ms);
         }
         TrayEvent::Menu(MenuAction::ToggleRates) => {
             update_settings(cx, |s| s.show_rates = !s.show_rates);
+        }
+        TrayEvent::Menu(MenuAction::ToggleTemp) => {
+            update_settings(cx, |s| s.show_temp = !s.show_temp);
+        }
+        TrayEvent::Menu(MenuAction::ToggleFanRpm) => {
+            update_settings(cx, |s| s.show_fan_rpm = !s.show_fan_rpm);
+        }
+        TrayEvent::Menu(MenuAction::OpenFansTab) => dashboard::open_on(dashboard::Tab::Fans, cx),
+        TrayEvent::Menu(MenuAction::FanPreset(choice)) => {
+            let settings = stats::stats(cx).read(cx).fan_settings.clone();
+            if let Some(active) = choice.active(&settings) {
+                update_fan_settings(cx, |s, _| s.active = active);
+            }
         }
         TrayEvent::Menu(MenuAction::OpenAwakeTab) => dashboard::open_on(dashboard::Tab::Awake, cx),
         TrayEvent::Menu(MenuAction::StartAwake(mode)) => {
@@ -140,15 +184,24 @@ pub fn handle_tray_event(event: TrayEvent, cx: &mut App) {
 }
 
 /// Change a setting, persist it, and redraw the tray right away.
-pub fn update_settings(cx: &mut App, f: impl FnOnce(&mut netwatch_core::settings::Settings)) {
+pub fn update_settings(cx: &mut App, f: impl FnOnce(&mut utilify_core::settings::Settings)) {
     stats::stats(cx).update(cx, |s, cx| s.update_settings(f, cx));
+    redraw_tray(cx);
+}
+
+/// Change fan presets or controls, persist and apply them, and redraw the
+/// tray right away. `f` gets the fans as last read.
+pub fn update_fan_settings(
+    cx: &mut App,
+    f: impl FnOnce(&mut utilify_core::fans::FanSettings, &[utilify_smc::FanInfo]),
+) {
+    stats::stats(cx).update(cx, |s, cx| s.update_fan_settings(f, cx));
     redraw_tray(cx);
 }
 
 fn redraw_tray(cx: &mut App) {
     let stats = stats::stats(cx);
-    let s = stats.read(cx);
-    tray::update(&s.monitor, &s.settings, &s.keep_awake);
+    tray::update(stats.read(cx));
 }
 
 /// Start a keep-awake session (replacing a running one) and redraw the tray

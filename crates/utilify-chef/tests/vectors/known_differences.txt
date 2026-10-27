@@ -1,0 +1,15 @@
+# CyberChef vectors this port deliberately answers differently, one per line:
+# <vector name> # <why>
+From Base45: Invalid character # the vector omits "Remove non-alphabet chars"; CyberChef leaves it undefined (off), the port fills in the default (on) like CyberChef's UI does
+To Base92: nothing # spec: Base92 README, DESIGN DECISIONS ¶3: the empty string encodes as "~"
+From Base92: Invalid character # spec: Base92 README, DESIGN DECISIONS ¶3: a lone "~" is the encoding of the empty string
+Encoded comments # spec: RFC 2047 §5 (2), §6.1: words are decoded in comments of structured fields only; input without a field name is unstructured text (RFC 5322 §3.6.8), where "(=?...?=)" is not an encoded-word
+Encoded adjacent comments whitespace # spec: RFC 2047 §5 (2), §6.1: no field name, so unstructured text, where a word must stand between linear white space; "(=?...?=" is ordinary text
+Encoded adjacent single whitespace ignored # spec: RFC 2047 §5 (2), §6.1: no field name, so unstructured text, where "(=?...?=" and "=?...?=)" are not encoded-words
+Encoded adjacent double whitespace ignored # spec: RFC 2047 §5 (2), §6.1: no field name, so unstructured text, where "(=?...?=" and "=?...?=)" are not encoded-words
+Encoded adjacent CRLF whitespace ignored # spec: RFC 2047 §5 (2), §6.1: no field name, so unstructured text, where "(=?...?=" and "=?...?=)" are not encoded-words
+ISO Decoding # spec: RFC 5322 §2.2.3: the line break before the last word has no SPACE/TAB after it, so it is not a fold and the words are not adjacent (RFC 2047 §6.2); the §8 original folds it
+From HTML Entity: invalid entity passed through # spec: WHATWG HTML §13.2.5.78: in text content the legacy name "&not" matches without its ";" (longest match), so "&notreal;" is "¬real;"
+From Hexdump: Wireshark # spec: the Wireshark User's Guide (§6.2, "The Packet Bytes Pane") gives no exact spacing; utilify-hexdump reads the copies' offset, byte spacing and extra space after the eighth byte from the text, but documents an ASCII column with an extra space after the eighth character (this vector's `........ ........`) as not read, so it is an error rather than a heuristic scan
+From Hexdump: 010 # spec: the 010 Editor manual defines no text export; utilify-hexdump's Layout::editor_010 reads a character column of printable ASCII with `.` for other bytes, and this vector's column shows 0x7f raw and 0x80-0xff as Windows-1252/Latin-1 glyphs (with trailing spaces), so the column does not match the bytes and it is an error
+Show Base64 offsets: escapes static output # spec: RFC 4648 §4: the alphabet's 65th symbol ("6" here) is the pad, and the last data character of offsets 1 and 2 also encodes bits of the following byte, so neither is static; CyberChef only recognises "=" as padding and shows "Rk66" / "M" as static

@@ -2,7 +2,7 @@
 //! assertions that block sleep: indefinitely, for a while, until a time of
 //! day, while an app runs, while a file downloads, or while the network is
 //! busy. The time spent awake adds up across launches in
-//! `<data dir>/dev.netwatch.app/awake.json`.
+//! `<data dir>/dev.utilify.app/awake.json`.
 //!
 //! macOS drops a process's assertions when it exits, so a crash can't leave
 //! the Mac stuck awake.
@@ -200,16 +200,10 @@ pub fn until(minute_of_day: u16, local_secs: u32) -> Duration {
 
 /// Seconds since local midnight.
 pub fn local_secs_of_day() -> u32 {
-    // SAFETY: `time` with a null pointer just returns the time; `localtime_r`
-    // writes only into `tm`.
-    unsafe {
-        let t = libc::time(std::ptr::null_mut());
-        let mut tm: libc::tm = std::mem::zeroed();
-        if libc::localtime_r(&t, &mut tm).is_null() {
-            return 0;
-        }
-        (tm.tm_hour * 3600 + tm.tm_min * 60 + tm.tm_sec) as u32
-    }
+    let t = jiff::Zoned::now().time();
+    u32::from(t.hour().unsigned_abs()) * 3600
+        + u32::from(t.minute().unsigned_abs()) * 60
+        + u32::from(t.second().unsigned_abs())
 }
 
 /// The current session, if any, and the running total of time kept awake.
@@ -418,14 +412,14 @@ mod sys {
 }
 
 /// The name the assertions show under in `pmset -g assertions`.
-pub const ASSERTION_NAME: &str = "Netwatch: keep awake";
+pub const ASSERTION_NAME: &str = "Utilify: keep awake";
 
 impl Assertion {
     #[cfg(target_os = "macos")]
     pub fn acquire(kind: Kind) -> anyhow::Result<Self> {
         let mut id = 0u32;
         let ret = sys::with_cfstring(kind.name(), |kind| {
-            sys::with_cfstring(c"Netwatch: keep awake", |name| {
+            sys::with_cfstring(c"Utilify: keep awake", |name| {
                 // SAFETY: both strings are live CFStrings and `id` is a valid
                 // out pointer.
                 unsafe {
@@ -559,19 +553,14 @@ pub fn load_total(path: &Path) -> Duration {
     Duration::from_secs(stored.total_secs)
 }
 
-/// Save atomically (temp file + rename).
+/// Save atomically.
 pub fn save_total(path: &Path, total: Duration) -> std::io::Result<()> {
-    if let Some(dir) = path.parent() {
-        std::fs::create_dir_all(dir)?;
-    }
-    let tmp = path.with_extension("json.tmp");
-    std::fs::write(
-        &tmp,
-        serde_json::to_vec_pretty(&Stored {
+    crate::write_atomic(
+        path,
+        &serde_json::to_vec_pretty(&Stored {
             total_secs: total.as_secs(),
         })?,
-    )?;
-    std::fs::rename(tmp, path)
+    )
 }
 
 #[cfg(test)]

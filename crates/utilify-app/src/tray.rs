@@ -1,20 +1,26 @@
-//! The menu-bar status item: a live icon (rates, graph, storage bar), a
-//! tooltip with the numbers, and a menu with the preferences and keep awake.
+//! The menu-bar status item: a live icon (rates, graph, storage bar, and
+//! optionally a temperature and fan speed), a tooltip with the numbers, and
+//! a menu with the preferences, keep awake and fans.
 //!
 //! Left click toggles the dashboard; right click opens the menu. The native
 //! tray is main-thread-only and lives in [`NATIVE`]; its event handlers run
 //! outside GPUI, so they forward [`TrayEvent`]s through a channel.
 
+use crate::stats::Stats;
 use crate::system::{self, RunningApp};
-use netwatch_core::awake::{self, KeepAwake, Mode};
-use netwatch_core::format;
-use netwatch_core::icon::{IconRenderer, TrayContent};
-use netwatch_core::monitor::Monitor;
-use netwatch_core::settings::{INTERVALS_MS, Settings};
 use std::cell::RefCell;
 use std::time::{Duration, Instant};
 use tray_icon::menu::accelerator::{Accelerator, Code, Modifiers};
 use tray_icon::menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem, Submenu};
+use utilify_core::awake::{self, KeepAwake, Mode};
+use utilify_core::fans::controller::{FanStatus, HelperStatus};
+use utilify_core::fans::service::FanSnapshot;
+use utilify_core::fans::{Active, Control, FanSettings};
+use utilify_core::format;
+use utilify_core::icon::{IconRenderer, Readout, TrayContent};
+use utilify_core::monitor::Monitor;
+use utilify_core::sensors;
+use utilify_core::settings::{INTERVALS_MS, Settings};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum TrayEvent {
@@ -26,11 +32,18 @@ pub enum TrayEvent {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MenuAction {
     OpenDashboard,
+    /// The data workbench window.
+    OpenWorkbench,
     /// "Other Time/Until…" and "Keep Awake Settings…": the dashboard's
     /// Awake tab.
     OpenAwakeTab,
     SetInterval(u64),
     ToggleRates,
+    ToggleTemp,
+    ToggleFanRpm,
+    /// "Show Fans…": the dashboard's Fans tab.
+    OpenFansTab,
+    FanPreset(PresetChoice),
     StartAwake(Mode),
     EndAwake,
     ToggleAllowDisplaySleep,
@@ -42,13 +55,42 @@ pub enum MenuAction {
     Quit,
 }
 
+/// A preset in the Fans menu. User presets go by their position in
+/// [`FanSettings::presets`]; the menu is rebuilt when that list changes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PresetChoice {
+    Automatic,
+    FullBlast,
+    User(usize),
+}
+
+impl PresetChoice {
+    /// The [`Active`] it selects, if the preset still exists.
+    pub fn active(self, settings: &FanSettings) -> Option<Active> {
+        Some(match self {
+            PresetChoice::Automatic => Active::Automatic,
+            PresetChoice::FullBlast => Active::FullBlast,
+            PresetChoice::User(i) => Active::Preset(settings.presets.get(i)?.name.clone()),
+        })
+    }
+}
+
 impl MenuAction {
     pub fn id(self) -> String {
         match self {
             MenuAction::OpenDashboard => "dashboard".into(),
+            MenuAction::OpenWorkbench => "workbench".into(),
             MenuAction::OpenAwakeTab => "awake:tab".into(),
             MenuAction::SetInterval(ms) => format!("interval:{ms}"),
             MenuAction::ToggleRates => "show_rates".into(),
+            MenuAction::ToggleTemp => "show_temp".into(),
+            MenuAction::ToggleFanRpm => "show_fan_rpm".into(),
+            MenuAction::OpenFansTab => "fans:tab".into(),
+            MenuAction::FanPreset(p) => match p {
+                PresetChoice::Automatic => "fans:preset:auto".into(),
+                PresetChoice::FullBlast => "fans:preset:full".into(),
+                PresetChoice::User(i) => format!("fans:preset:user:{i}"),
+            },
             MenuAction::StartAwake(mode) => format!(
                 "awake:start:{}",
                 match mode {
@@ -74,8 +116,14 @@ impl MenuAction {
     pub fn parse(id: &str) -> Option<Self> {
         Some(match id {
             "dashboard" => MenuAction::OpenDashboard,
+            "workbench" => MenuAction::OpenWorkbench,
             "awake:tab" => MenuAction::OpenAwakeTab,
             "show_rates" => MenuAction::ToggleRates,
+            "show_temp" => MenuAction::ToggleTemp,
+            "show_fan_rpm" => MenuAction::ToggleFanRpm,
+            "fans:tab" => MenuAction::OpenFansTab,
+            "fans:preset:auto" => MenuAction::FanPreset(PresetChoice::Automatic),
+            "fans:preset:full" => MenuAction::FanPreset(PresetChoice::FullBlast),
             "awake:end" => MenuAction::EndAwake,
             "awake:allow_display" => MenuAction::ToggleAllowDisplaySleep,
             "awake:allow_closed" => MenuAction::ToggleAllowClosedDisplaySleep,
@@ -85,7 +133,9 @@ impl MenuAction {
             "login" => MenuAction::ToggleLaunchAtLogin,
             "quit" => MenuAction::Quit,
             _ => {
-                if let Some(start) = id.strip_prefix("awake:start:") {
+                if let Some(i) = id.strip_prefix("fans:preset:user:") {
+                    MenuAction::FanPreset(PresetChoice::User(i.parse().ok()?))
+                } else if let Some(start) = id.strip_prefix("awake:start:") {
                     let (kind, arg) = start.split_once(':').unwrap_or((start, ""));
                     MenuAction::StartAwake(match kind {
                         "indefinite" => Mode::Indefinite,
@@ -101,6 +151,54 @@ impl MenuAction {
                 }
             }
         })
+    }
+}
+
+/// How a fan is driven, for the Fans menu: `Auto`, `Constant 3000 rpm`,
+/// `CPU Core Average 50–85°C`.
+pub fn control_label(control: &Control, sensors: &[sensors::Sensor]) -> String {
+    match control {
+        Control::Constant(rpm) => format!("Constant {rpm:.0} rpm"),
+        c => c.describe(|id| sensors::find(sensors, id).map(|s| s.name.clone())),
+    }
+}
+
+/// `Left side: 2317 rpm · Auto`.
+pub fn fan_line(fan: &FanStatus, sensors: &[sensors::Sensor]) -> String {
+    format!(
+        "{}: {:.0} rpm · {}",
+        fan.name,
+        fan.info.current,
+        control_label(&fan.control, sensors)
+    )
+}
+
+/// Why fan control isn't available, in a few words; `None` when it is.
+pub fn helper_note(status: &HelperStatus) -> Option<&'static str> {
+    match status {
+        HelperStatus::Ready => None,
+        HelperStatus::Unknown => Some("Checking the fan helper…"),
+        HelperStatus::Unsupported => Some("Fan control needs Apple Silicon"),
+        HelperStatus::NotInstalled => Some("Fan helper not installed"),
+        HelperStatus::NotRunning => Some("Fan helper not running"),
+        HelperStatus::PermissionDenied => Some("Fan control needs an admin user"),
+        HelperStatus::Broken(_) => Some("Lost the fan helper"),
+    }
+}
+
+/// The menu-bar readout the settings ask for, from the latest fan snapshot.
+pub fn readout(settings: &Settings, fans: &FanSnapshot) -> Readout {
+    let celsius = || {
+        sensors::find(&fans.sensors, &settings.menu_temp_sensor)
+            .map(|s| s.celsius)
+            // Saved before a sensor rename, or not on this Mac.
+            .or_else(|| sensors::cpu_average(&fans.sensors))
+    };
+    // A Mac without fans has nothing to show.
+    let fanless = fans.read_at.is_some() && fans.fans.is_empty();
+    Readout {
+        celsius: settings.show_temp.then(celsius),
+        rpm: (settings.show_fan_rpm && !fanless).then(|| fans.fastest_rpm()),
     }
 }
 
@@ -165,6 +263,15 @@ struct Native {
     tray: tray_icon::TrayIcon,
     intervals: Vec<(u64, CheckMenuItem)>,
     show_rates: CheckMenuItem,
+    show_temp: CheckMenuItem,
+    show_fan_rpm: CheckMenuItem,
+    fans_menu: Submenu,
+    /// What the Fans menu was built for: fan count, user presets, and the
+    /// helper note. It's rebuilt when that changes, else updated in place.
+    fans_shape: Option<(usize, Vec<String>, Option<&'static str>)>,
+    fan_lines: Vec<MenuItem>,
+    presets: Vec<(PresetChoice, CheckMenuItem)>,
+    last_fans_title: Option<String>,
     awake_menu: Submenu,
     session_line: MenuItem,
     activation_line: MenuItem,
@@ -180,7 +287,7 @@ struct Native {
     login: CheckMenuItem,
     system_checked: Option<Instant>,
     renderer: IconRenderer,
-    last_icon: Option<netwatch_core::icon::Bitmap>,
+    last_icon: Option<utilify_core::icon::Bitmap>,
     last_tooltip: Option<String>,
     last_awake_title: Option<String>,
 }
@@ -190,6 +297,7 @@ thread_local! {
 }
 
 const AWAKE_TITLE: &str = "Keep Awake";
+const FANS_TITLE: &str = "Fans";
 
 fn cmd(code: Code) -> Option<Accelerator> {
     Some(Accelerator::new(Some(Modifiers::SUPER), code))
@@ -230,6 +338,18 @@ pub fn build(settings: &Settings, events: smol::channel::Sender<TrayEvent>) -> a
         "Show Speeds in Menu Bar",
         settings.show_rates,
     );
+    let show_temp = check(
+        MenuAction::ToggleTemp,
+        "Show Temperature in Menu Bar",
+        settings.show_temp,
+    );
+    let show_fan_rpm = check(
+        MenuAction::ToggleFanRpm,
+        "Show Fan Speed in Menu Bar",
+        settings.show_fan_rpm,
+    );
+    // Filled by the first update, once the fans have been read.
+    let fans_menu = Submenu::new(FANS_TITLE, true);
 
     // Keep Awake, laid out like Amphetamine's menu: the current session and
     // its options, then the ways to start one, then quick settings.
@@ -267,7 +387,7 @@ pub fn build(settings: &Settings, events: smol::channel::Sender<TrayEvent>) -> a
 
     let on_launch = check(
         MenuAction::ToggleAwakeOnLaunch,
-        "Start Session When Netwatch Launches",
+        "Start Session When Utilify Launches",
         settings.awake_on_launch,
     );
     let notify_end = check(
@@ -277,7 +397,7 @@ pub fn build(settings: &Settings, events: smol::channel::Sender<TrayEvent>) -> a
     );
     let login = check(
         MenuAction::ToggleLaunchAtLogin,
-        "Launch Netwatch at Login",
+        "Launch Utilify at Login",
         false,
     );
     let quick = Submenu::new("Quick Settings", true);
@@ -324,12 +444,16 @@ pub fn build(settings: &Settings, events: smol::channel::Sender<TrayEvent>) -> a
     let menu = Menu::new();
     menu.append_items(&[
         &item(MenuAction::OpenDashboard, "Open Dashboard", None),
+        &item(MenuAction::OpenWorkbench, "Open Workbench", cmd(Code::KeyB)),
         &awake_menu,
+        &fans_menu,
         &PredefinedMenuItem::separator(),
         &refresh,
         &show_rates,
+        &show_temp,
+        &show_fan_rpm,
         &PredefinedMenuItem::separator(),
-        &item(MenuAction::Quit, "Quit Netwatch", cmd(Code::KeyQ)),
+        &item(MenuAction::Quit, "Quit Utilify", cmd(Code::KeyQ)),
     ])?;
 
     let renderer = IconRenderer::new([crate::assets::icon_font()]);
@@ -341,7 +465,7 @@ pub fn build(settings: &Settings, events: smol::channel::Sender<TrayEvent>) -> a
             first.height,
         )?)
         .with_icon_as_template(true)
-        .with_tooltip(netwatch_core::PRODUCT_NAME)
+        .with_tooltip(utilify_core::PRODUCT_NAME)
         .with_menu(Box::new(menu))
         .with_menu_on_left_click(false)
         .build()?;
@@ -369,6 +493,13 @@ pub fn build(settings: &Settings, events: smol::channel::Sender<TrayEvent>) -> a
             tray,
             intervals,
             show_rates,
+            show_temp,
+            show_fan_rpm,
+            fans_menu,
+            fans_shape: None,
+            fan_lines: Vec::new(),
+            presets: Vec::new(),
+            last_fans_title: None,
             awake_menu,
             session_line,
             activation_line,
@@ -403,19 +534,21 @@ pub fn app_name(pid: i32) -> Option<String> {
 
 /// Redraw the icon, tooltip and menu from the latest sample. Only touches
 /// the native tray for parts that changed.
-pub fn update(monitor: &Monitor, settings: &Settings, keep_awake: &KeepAwake) {
+pub fn update(stats: &Stats) {
+    let (monitor, settings, keep_awake) = (&stats.monitor, &stats.settings, &stats.keep_awake);
     NATIVE.with(|n| {
         let mut n = n.borrow_mut();
         let Some(n) = n.as_mut() else { return };
         let now = Instant::now();
 
-        let points = monitor.history().tail(netwatch_core::icon::SLOTS);
+        let points = monitor.history().tail(utilify_core::icon::SLOTS);
         let r = monitor.rates();
         let content = TrayContent {
             points: &points,
             rates: settings.show_rates.then_some((r.down, r.up)),
             disk_used: monitor.disk().map(|d| d.used_fraction()),
             awake: keep_awake.is_active(),
+            readout: readout(settings, &stats.fans),
         };
         match n.renderer.tray_icon(&content, 2.0) {
             Ok(bmp) if n.last_icon.as_ref() != Some(&bmp) => {
@@ -445,11 +578,92 @@ pub fn update(monitor: &Monitor, settings: &Settings, keep_awake: &KeepAwake) {
             item.set_checked(*ms == settings.interval_ms);
         }
         n.show_rates.set_checked(settings.show_rates);
+        n.show_temp.set_checked(settings.show_temp);
+        n.show_fan_rpm.set_checked(settings.show_fan_rpm);
         n.update_awake(settings, keep_awake, status, now);
+        n.update_fans(&stats.fans, &stats.fan_settings);
     });
 }
 
 impl Native {
+    /// The Fans menu, laid out like Macs Fan Control's: each fan and how
+    /// it's driven, then the presets with a check on the active one, then
+    /// Show Fans.
+    fn update_fans(&mut self, fans: &FanSnapshot, settings: &FanSettings) {
+        let note = if fans.overheat.is_some() {
+            Some("Too hot: fans on automatic")
+        } else if fans.foreign && fans.helper.is_ready() {
+            Some("Another app is controlling the fans")
+        } else {
+            helper_note(&fans.helper)
+        };
+        let names: Vec<String> = settings.presets.iter().map(|p| p.name.clone()).collect();
+        let shape = (fans.fans.len(), names, note);
+        if self.fans_shape.as_ref() != Some(&shape) {
+            self.rebuild_fans(&shape, settings);
+            self.fans_shape = Some(shape);
+        }
+        for (line, fan) in self.fan_lines.iter().zip(&fans.fans) {
+            line.set_text(fan_line(fan, &fans.sensors));
+        }
+        let ready = fans.helper.is_ready();
+        for (choice, item) in &self.presets {
+            item.set_checked(choice.active(settings).as_ref() == Some(&settings.active));
+            item.set_enabled(ready || *choice == PresetChoice::Automatic);
+        }
+        let title = match settings.active {
+            Active::Automatic => FANS_TITLE.to_string(),
+            ref a => format!("{FANS_TITLE}: {}", a.label()),
+        };
+        if self.last_fans_title.as_ref() != Some(&title) {
+            self.fans_menu.set_text(&title);
+            self.last_fans_title = Some(title);
+        }
+    }
+
+    fn rebuild_fans(
+        &mut self,
+        (count, names, note): &(usize, Vec<String>, Option<&'static str>),
+        settings: &FanSettings,
+    ) {
+        while self.fans_menu.remove_at(0).is_some() {}
+        self.fan_lines = (0..*count).map(|_| label("")).collect();
+        if *count == 0 {
+            let _ = self.fans_menu.append(&label("No Fans"));
+        }
+        for line in &self.fan_lines {
+            let _ = self.fans_menu.append(line);
+        }
+        let _ = self.fans_menu.append(&PredefinedMenuItem::separator());
+        let mut choices = vec![
+            (PresetChoice::Automatic, "Automatic".to_string()),
+            (PresetChoice::FullBlast, "Full Blast".to_string()),
+        ];
+        choices.extend(
+            names
+                .iter()
+                .enumerate()
+                .map(|(i, n)| (PresetChoice::User(i), n.clone())),
+        );
+        self.presets = choices
+            .into_iter()
+            .map(|(choice, text)| {
+                let on = choice.active(settings).as_ref() == Some(&settings.active);
+                (choice, check(MenuAction::FanPreset(choice), &text, on))
+            })
+            .collect();
+        for (_, item) in &self.presets {
+            let _ = self.fans_menu.append(item);
+        }
+        let _ = self.fans_menu.append(&PredefinedMenuItem::separator());
+        if let Some(note) = note {
+            let _ = self.fans_menu.append(&label(note));
+        }
+        let _ = self
+            .fans_menu
+            .append(&item(MenuAction::OpenFansTab, "Show Fans…", None));
+    }
+
     fn update_awake(
         &mut self,
         settings: &Settings,
@@ -541,18 +755,25 @@ pub fn refresh_system() {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use netwatch_core::awake::{Activation, Session};
-    use netwatch_core::disk::DiskUsage;
-    use netwatch_core::net::InterfaceCounters;
+    use utilify_core::awake::{Activation, Session};
+    use utilify_core::disk::DiskUsage;
+    use utilify_core::net::InterfaceCounters;
 
     #[test]
     fn menu_ids_round_trip() {
         for a in [
             MenuAction::OpenDashboard,
+            MenuAction::OpenWorkbench,
             MenuAction::OpenAwakeTab,
             MenuAction::SetInterval(500),
             MenuAction::SetInterval(5000),
             MenuAction::ToggleRates,
+            MenuAction::ToggleTemp,
+            MenuAction::ToggleFanRpm,
+            MenuAction::OpenFansTab,
+            MenuAction::FanPreset(PresetChoice::Automatic),
+            MenuAction::FanPreset(PresetChoice::FullBlast),
+            MenuAction::FanPreset(PresetChoice::User(3)),
             MenuAction::StartAwake(Mode::Indefinite),
             MenuAction::StartAwake(Mode::For(Duration::from_secs(900))),
             MenuAction::StartAwake(Mode::Until(18 * 60 + 30)),
@@ -574,6 +795,7 @@ mod tests {
         assert_eq!(MenuAction::parse("bogus"), None);
         assert_eq!(MenuAction::parse("awake:start:for:soon"), None);
         assert_eq!(MenuAction::parse("awake:start:nap"), None);
+        assert_eq!(MenuAction::parse("fans:preset:user:x"), None);
     }
 
     #[test]
@@ -633,5 +855,114 @@ mod tests {
             tooltip(&Monitor::new(10), Some("4:59 left")),
             "↓ 0 B/s    ↑ 0 B/s\nDisk: unavailable\nKeeping awake: 4:59 left"
         );
+    }
+
+    fn fan(index: u8, current: f32, control: Control) -> FanStatus {
+        FanStatus {
+            info: utilify_smc::FanInfo {
+                index,
+                current,
+                min: 1000.0,
+                max: 5000.0,
+                target: current,
+                manual: false,
+            },
+            name: utilify_core::fans::fan_name(index, 2),
+            control,
+            target: None,
+            issue: None,
+        }
+    }
+
+    fn cpu(c: f32) -> sensors::Sensor {
+        sensors::Sensor {
+            id: sensors::CPU_AVERAGE_ID.into(),
+            name: "CPU Core Average".into(),
+            group: sensors::SensorGroup::Cpu,
+            celsius: c,
+        }
+    }
+
+    #[test]
+    fn fan_lines_read_like_macs_fan_control() {
+        let s = [cpu(50.0)];
+        assert_eq!(
+            fan_line(&fan(0, 2316.6, Control::Auto), &s),
+            "Left side: 2317 rpm · Auto"
+        );
+        assert_eq!(
+            fan_line(&fan(1, 3000.0, Control::Constant(3000.0)), &s),
+            "Right side: 3000 rpm · Constant 3000 rpm"
+        );
+        let curve = Control::SensorCurve {
+            sensor_id: sensors::CPU_AVERAGE_ID.into(),
+            from_c: 50.0,
+            to_c: 85.0,
+        };
+        assert_eq!(
+            fan_line(&fan(1, 2000.0, curve), &s),
+            "Right side: 2000 rpm · CPU Core Average 50–85°C"
+        );
+        assert_eq!(helper_note(&HelperStatus::Ready), None);
+        assert_eq!(
+            helper_note(&HelperStatus::NotInstalled),
+            Some("Fan helper not installed")
+        );
+    }
+
+    #[test]
+    fn preset_choices_map_to_active() {
+        let mut settings = FanSettings::default();
+        assert_eq!(
+            PresetChoice::FullBlast.active(&settings),
+            Some(Active::FullBlast)
+        );
+        assert_eq!(PresetChoice::User(0).active(&settings), None);
+        settings.presets.push(utilify_core::fans::Preset {
+            name: "Quiet".into(),
+            controls: vec![],
+        });
+        assert_eq!(
+            PresetChoice::User(0).active(&settings),
+            Some(Active::Preset("Quiet".into()))
+        );
+    }
+
+    #[test]
+    fn readout_follows_the_settings() {
+        let fans = FanSnapshot {
+            fans: vec![fan(0, 2000.0, Control::Auto), fan(1, 2500.0, Control::Auto)],
+            sensors: vec![cpu(61.0)],
+            read_at: Some(Instant::now()),
+            ..Default::default()
+        };
+        let mut settings = Settings::default();
+        assert_eq!(readout(&settings, &fans), Readout::default());
+        settings.show_temp = true;
+        settings.show_fan_rpm = true;
+        assert_eq!(
+            readout(&settings, &fans),
+            Readout {
+                celsius: Some(Some(61.0)),
+                rpm: Some(Some(2500.0)),
+            }
+        );
+        // An unknown sensor falls back to the CPU average; before the first
+        // reading there's nothing yet.
+        settings.menu_temp_sensor = "gone".into();
+        assert_eq!(readout(&settings, &fans).celsius, Some(Some(61.0)));
+        assert_eq!(
+            readout(&settings, &FanSnapshot::default()),
+            Readout {
+                celsius: Some(None),
+                rpm: Some(None),
+            }
+        );
+        // Fanless: no rpm line at all.
+        let fanless = FanSnapshot {
+            read_at: Some(Instant::now()),
+            ..Default::default()
+        };
+        assert_eq!(readout(&settings, &fanless).rpm, None);
     }
 }

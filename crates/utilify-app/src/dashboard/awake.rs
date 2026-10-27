@@ -8,10 +8,10 @@ use crate::ui::{self, color::*, px};
 use gpui_kit::component::{h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
-use netwatch_core::awake::{self, Activation, Mode, Session};
-use netwatch_core::format;
-use netwatch_core::settings::Settings;
 use std::time::{Duration, Instant};
+use utilify_core::awake::{self, Activation, Mode, Session};
+use utilify_core::format;
+use utilify_core::settings::Settings;
 
 /// What the keep-awake views show, copied out of the model.
 pub(super) struct Snapshot {
@@ -170,9 +170,8 @@ pub(super) fn header(s: &super::Snapshot) -> (SharedString, Vec<AnyElement>) {
     ("Keep Awake".into(), parts)
 }
 
-fn section_label(label: &str) -> Div {
-    ui::ui_text(13., fg3()).child(label.to_uppercase())
-}
+/// Wide enough for the longest value, `11 h 45 min`, so steppers line up.
+const STEPPER_W: f32 = 210.;
 
 /// Title (and detail) on the left, a control on the right.
 fn row(title: &str, detail: Option<String>, control: impl IntoElement) -> Div {
@@ -188,26 +187,6 @@ fn row(title: &str, detail: Option<String>, control: impl IntoElement) -> Div {
                 .children(detail.map(|d| ui::ui_text(13.5, fg3()).child(d))),
         )
         .child(control)
-}
-
-fn small_button(id: impl Into<ElementId>, label: &str) -> Stateful<Div> {
-    div()
-        .id(id)
-        .flex_none()
-        .h(px(33.))
-        .px(px(14.))
-        .flex()
-        .items_center()
-        .justify_center()
-        .rounded(px(8.))
-        .border_1()
-        .border_color(card_border())
-        .bg(rgb(0x141414))
-        .text_size(px(14.5))
-        .text_color(fg())
-        .cursor_pointer()
-        .hover(|s| s.bg(rgb(0x1f1f1f)))
-        .child(label.to_string())
 }
 
 fn toggle_row(
@@ -239,7 +218,7 @@ pub(super) fn tab(s: &super::Snapshot, cx: &mut App) -> Div {
             v = v.child(row(
                 session.activation.label(),
                 Some(format!("running {running}")),
-                small_button("awake-end", "End session")
+                ui::small_button("awake-end", "End session", true)
                     .text_color(danger())
                     .on_click(|_, _, cx| crate::stop_keep_awake(cx)),
             ));
@@ -251,9 +230,9 @@ pub(super) fn tab(s: &super::Snapshot, cx: &mut App) -> Div {
     let until = picks.until();
     let stepper = |id: &'static str, value: String, minus, plus| {
         div()
-            .w(px(175.))
+            .w(px(STEPPER_W))
             .flex()
-            .child(ui::stepper(id, value, minus, plus))
+            .child(ui::stepper_sized(id, value, minus, plus, ui::SMALL_H))
     };
     let pick = |f: fn(&mut Picks, Option<u32>, Option<u16>), m: Option<u32>, u: Option<u16>| {
         move |_: &ClickEvent, window: &mut Window, cx: &mut App| {
@@ -269,13 +248,13 @@ pub(super) fn tab(s: &super::Snapshot, cx: &mut App) -> Div {
         .child(
             h_flex()
                 .justify_between()
-                .child(section_label("Start new session"))
+                .child(ui::section_label("Start new session"))
                 .child(ui::ui_text(13., fg4()).child("while an app runs: in the menu")),
         )
         .child(row(
             "Indefinitely",
             None,
-            small_button("awake-indefinite", "Start").on_click(start(Mode::Indefinite)),
+            ui::small_button("awake-indefinite", "Start", true).on_click(start(Mode::Indefinite)),
         ))
         .child(row(
             "For",
@@ -289,7 +268,7 @@ pub(super) fn tab(s: &super::Snapshot, cx: &mut App) -> Div {
                     for_step(for_mins, true).map(|m| pick(set_for, Some(m), None)),
                 ))
                 .child(
-                    small_button("awake-for-start", "Start")
+                    ui::small_button("awake-for-start", "Start", true)
                         .on_click(start(Mode::For(Duration::from_secs(for_mins as u64 * 60)))),
                 ),
         ))
@@ -305,13 +284,13 @@ pub(super) fn tab(s: &super::Snapshot, cx: &mut App) -> Div {
                     Some(pick(set_until, None, Some(until_step(until, true)))),
                 ))
                 .child(
-                    small_button("awake-until-start", "Start").on_click(start(Mode::Until(until))),
+                    ui::small_button("awake-until-start", "Start", true).on_click(start(Mode::Until(until))),
                 ),
         ))
         .child(row(
             "While a file downloads",
             Some("Any download in progress in Downloads".into()),
-            small_button("awake-file", "Start").on_click(start(Mode::WhileFileDownloading)),
+            ui::small_button("awake-file", "Start", true).on_click(start(Mode::WhileFileDownloading)),
         ))
         .child(row(
             "While the network is busy",
@@ -320,7 +299,7 @@ pub(super) fn tab(s: &super::Snapshot, cx: &mut App) -> Div {
                 format::span(awake::NETWORK_GRACE.as_secs()),
                 format::rate(awake::NETWORK_BUSY)
             )),
-            small_button("awake-network", "Start").on_click(start(Mode::WhileNetworkBusy)),
+            ui::small_button("awake-network", "Start", true).on_click(start(Mode::WhileNetworkBusy)),
         ));
 
     let screen_saver_mins = set.awake_screen_saver_mins;
@@ -331,7 +310,7 @@ pub(super) fn tab(s: &super::Snapshot, cx: &mut App) -> Div {
     };
     let options = v_flex()
         .gap(px(6.))
-        .child(section_label("Session options"))
+        .child(ui::section_label("Session options"))
         .child(toggle_row(
             "awake-allow-display",
             "Allow display sleep",
@@ -368,11 +347,12 @@ pub(super) fn tab(s: &super::Snapshot, cx: &mut App) -> Div {
                 v.child(row(
                     "Screen saver after",
                     None,
-                    div().w(px(175.)).flex().child(ui::stepper(
+                    div().w(px(STEPPER_W)).flex().child(ui::stepper_sized(
                         "awake-saver-mins",
                         format::span_long(screen_saver_mins as u64 * 60),
                         (screen_saver_mins > 5).then(|| set_mins(screen_saver_mins - 5)),
                         (screen_saver_mins < 240).then(|| set_mins(screen_saver_mins + 5)),
+                        ui::SMALL_H,
                     )),
                 ))
             },
@@ -381,11 +361,11 @@ pub(super) fn tab(s: &super::Snapshot, cx: &mut App) -> Div {
     let login = crate::system::login::enabled();
     let quick = v_flex()
         .gap(px(6.))
-        .child(section_label("Quick settings"))
+        .child(ui::section_label("Quick settings"))
         .child(toggle_row(
             "awake-on-launch",
             "Start a session at launch",
-            Some("Indefinitely, when Netwatch opens".into()),
+            Some("Indefinitely, when Utilify opens".into()),
             set.awake_on_launch,
             true,
             |s| s.awake_on_launch = !s.awake_on_launch,
@@ -404,7 +384,7 @@ pub(super) fn tab(s: &super::Snapshot, cx: &mut App) -> Div {
                 t.on_click(|_, _, cx| crate::toggle_launch_at_login(cx))
             });
             row(
-                "Launch Netwatch at login",
+                "Launch Utilify at login",
                 login.is_none().then(|| "Needs macOS 13 or later".into()),
                 toggle,
             )

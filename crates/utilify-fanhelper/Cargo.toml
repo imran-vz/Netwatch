@@ -1,0 +1,14 @@
+[package]
+name = "utilify-fanhelper"
+description = "Utilify's root fan helper: sets fan speeds through the SMC for admin users"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "utilify-fanhelper"
+path = "src/main.rs"
+
+[dependencies]
+utilify-smc = { path = "../utilify-smc" }
+libc = "0.2"

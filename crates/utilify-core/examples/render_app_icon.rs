@@ -1,7 +1,7 @@
-//! Rasterize `assets/icons/app/netwatch.svg` into the bundle icons:
-//! `netwatch.png` (1024px) and `netwatch.icns` (via `iconutil`).
+//! Rasterize `assets/icons/app/utilify.svg` into the bundle icons:
+//! `utilify.png` (1024px) and `utilify.icns` (via `iconutil`).
 //!
-//! `cargo run -p netwatch-core --example render_app_icon`
+//! `cargo run -p utilify-core --example render_app_icon`
 //!
 //! With `-- <in.svg> <out.png>` it renders just that file instead, which is
 //! handy for previewing design variants.
@@ -16,7 +16,7 @@ fn main() -> anyhow::Result<()> {
         return preview(Path::new(input), Path::new(output));
     }
     let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets/icons/app");
-    let svg = std::fs::read_to_string(dir.join("netwatch.svg"))?;
+    let svg = std::fs::read_to_string(dir.join("utilify.svg"))?;
     let tree = usvg::Tree::from_str(&svg, &usvg::Options::default())?;
 
     let render = |px: u32, path: &Path| -> anyhow::Result<()> {
@@ -31,9 +31,9 @@ fn main() -> anyhow::Result<()> {
         Ok(())
     };
 
-    render(1024, &dir.join("netwatch.png"))?;
+    render(1024, &dir.join("utilify.png"))?;
 
-    let iconset = std::env::temp_dir().join("netwatch.iconset");
+    let iconset = std::env::temp_dir().join("utilify.iconset");
     let _ = std::fs::remove_dir_all(&iconset);
     std::fs::create_dir_all(&iconset)?;
     for base in [16, 32, 128, 256, 512] {
@@ -45,7 +45,7 @@ fn main() -> anyhow::Result<()> {
     }
     let status = Command::new("iconutil")
         .args(["-c", "icns", "-o"])
-        .arg(dir.join("netwatch.icns"))
+        .arg(dir.join("utilify.icns"))
         .arg(&iconset)
         .status()?;
     anyhow::ensure!(status.success(), "iconutil failed: {status}");

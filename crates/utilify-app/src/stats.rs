@@ -1,19 +1,24 @@
 //! The app's model: the sampling [`Monitor`], settings, the stored disk
-//! history, the speed test and keep-awake sessions. Views observe it; [`spawn_sampler`] advances
-//! it on a timer.
+//! history, the speed test, keep-awake sessions and fan control. Views
+//! observe it; [`spawn_sampler`] advances it on a timer, and the fan thread
+//! ([`FanService`]) posts its own snapshots.
 
 use gpui_kit::*;
-use netwatch_core::awake::{
-    self, Activation, Assertions, KeepAwake, Kind, Mode, ScreenSaverGate, Session, Signals,
-};
-use netwatch_core::disk_history::{self, DiskHistory};
-use netwatch_core::monitor::Monitor;
-use netwatch_core::settings::{self, Settings, StorageAlarm};
-use netwatch_core::speedtest::{self, SpeedTestResult};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
+use utilify_core::awake::{
+    self, Activation, Assertions, KeepAwake, Kind, Mode, ScreenSaverGate, Session, Signals,
+};
+use utilify_core::disk_history::{self, DiskHistory};
+use utilify_core::fans::client::HelperPaths;
+use utilify_core::fans::service::{FanService, FanSnapshot};
+use utilify_core::fans::{self, FanSettings};
+use utilify_core::monitor::Monitor;
+use utilify_core::settings::{self, Settings, StorageAlarm};
+use utilify_core::speedtest::{self, SpeedTestResult};
+use utilify_smc::FanInfo;
 
 #[derive(Clone, Debug, Default)]
 pub enum SpeedTest {
@@ -48,12 +53,20 @@ pub struct Stats {
     screen_saver: ScreenSaverGate,
     /// Watched by "While File Is Downloading".
     downloads_dir: Option<PathBuf>,
+    /// The latest fan and sensor readings, and the helper's state.
+    pub fans: FanSnapshot,
+    pub fan_settings: FanSettings,
+    fan_settings_path: Option<PathBuf>,
+    fan_service: Option<FanService>,
+    /// Last sensor demand sent to the fan thread.
+    fan_sensors_wanted: bool,
 }
 
 impl Stats {
     pub fn new(settings: Settings, settings_path: Option<PathBuf>) -> Self {
         let disk_history_path = disk_history::default_path();
         let awake_path = awake::default_path();
+        let fan_settings_path = fans::default_path();
         Self {
             monitor: Monitor::default(),
             settings,
@@ -77,6 +90,79 @@ impl Stats {
             assertions: Assertions::default(),
             screen_saver: ScreenSaverGate::default(),
             downloads_dir: awake::downloads_dir(),
+            fans: FanSnapshot::default(),
+            fan_settings: fan_settings_path
+                .as_deref()
+                .map(fans::load)
+                .unwrap_or_default(),
+            fan_settings_path,
+            fan_service: None,
+            fan_sensors_wanted: false,
+        }
+    }
+
+    /// Start the fan thread; its snapshots land in [`Stats::fans`].
+    pub fn start_fans(&mut self, cx: &mut Context<Self>) {
+        let (tx, rx) = smol::channel::unbounded();
+        self.fan_service = Some(FanService::spawn(
+            self.fan_settings.clone(),
+            helper_paths(),
+            move |snapshot| {
+                let _ = tx.try_send(snapshot);
+            },
+        ));
+        cx.spawn(async move |this, cx| {
+            while let Ok(mut snapshot) = rx.recv().await {
+                // Only the newest matters.
+                while let Ok(newer) = rx.try_recv() {
+                    snapshot = newer;
+                }
+                if this
+                    .update(cx, |s, cx| {
+                        s.fans = snapshot;
+                        cx.notify();
+                    })
+                    .is_err()
+                {
+                    return;
+                }
+            }
+        })
+        .detach();
+    }
+
+    /// The fans as last read, for edits that depend on them.
+    pub fn fan_infos(&self) -> Vec<FanInfo> {
+        self.fans.fans.iter().map(|f| f.info).collect()
+    }
+
+    /// Change the fan presets or controls, persist them, and apply them now.
+    pub fn update_fan_settings(
+        &mut self,
+        f: impl FnOnce(&mut FanSettings, &[FanInfo]),
+        cx: &mut Context<Self>,
+    ) {
+        let infos = self.fan_infos();
+        f(&mut self.fan_settings, &infos);
+        if let Some(path) = &self.fan_settings_path
+            && let Err(e) = fans::save(path, &self.fan_settings)
+        {
+            log::warn!("Saving fan settings failed: {e}");
+        }
+        if let Some(service) = &self.fan_service {
+            service.set_settings(self.fan_settings.clone());
+        }
+        cx.notify();
+    }
+
+    /// Have the fan thread read the sensors every tick (for the dashboard
+    /// or the menu-bar temperature), or only when a curve needs them.
+    pub fn want_fan_sensors(&mut self, on: bool) {
+        if on != self.fan_sensors_wanted
+            && let Some(service) = &self.fan_service
+        {
+            service.want_sensors(on);
+            self.fan_sensors_wanted = on;
         }
     }
 
@@ -158,8 +244,8 @@ impl Stats {
             title: "Storage is almost full".into(),
             body: format!(
                 "The startup disk is {} full, {} free.",
-                netwatch_core::format::percent(used),
-                netwatch_core::format::bytes(disk.available)
+                utilify_core::format::percent(used),
+                utilify_core::format::bytes(disk.available)
             )
             .into(),
             actions: Vec::new(),
@@ -241,11 +327,17 @@ impl Stats {
         cx.notify();
     }
 
-    /// On quit: end the session so its last stretch is saved, and release
-    /// the assertion.
+    /// On quit: end the session so its last stretch is saved, release the
+    /// assertion, and put the fans back to automatic.
     pub fn shutdown(&mut self) {
         self.keep_awake.stop(Instant::now());
         self.sync_awake();
+        if let Some(service) = self.fan_service.take()
+            && !service.shutdown(Duration::from_secs(2))
+        {
+            // The helper restores them when our connection closes anyway.
+            log::warn!("The fan thread didn't stop in time");
+        }
     }
 
     /// Hold the power assertions the session and settings call for, and
@@ -275,6 +367,20 @@ impl Stats {
         }
         cx.notify();
     }
+}
+
+/// The helper's socket. Debug builds can point it elsewhere with
+/// UTILIFY_DEV_FAN_SOCKET, e.g. at `utilify-fanhelper --fake --no-root-check
+/// --socket /tmp/fans.sock`, to try fan control without touching the fans.
+fn helper_paths() -> HelperPaths {
+    #[cfg(debug_assertions)]
+    if let Some(socket) = std::env::var_os("UTILIFY_DEV_FAN_SOCKET") {
+        return HelperPaths {
+            socket: socket.into(),
+            plist: None,
+        };
+    }
+    HelperPaths::default()
 }
 
 /// Global handle so tray events can reach the model.

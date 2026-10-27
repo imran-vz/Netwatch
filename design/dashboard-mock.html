@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<title>Netwatch dashboard — mock</title>
+<title>Utilify dashboard — mock</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600&family=Geist+Mono:wght@400;500&display=swap" rel="stylesheet">
 <style>
@@ -272,7 +272,7 @@
 </head>
 <body>
 
-<div class="note">Netwatch dashboard · each card is the same popover on a different tab · live fake data, controls are interactive</div>
+<div class="note">Utilify dashboard · each card is the same popover on a different tab · live fake data, controls are interactive</div>
 
 <template id="card-tpl">
   <div class="card">
@@ -506,10 +506,10 @@ function renderCard(card) {
   const scale = Math.max(peakDn, 1e6);
   const util = Math.min(1, Math.max(S.dn.at(-1), S.up.at(-1)) * 8 / (LINK_MBPS * 1e6));
   const head = {
-    overview: ["Netwatch", `en0<span class="dot">·</span><span style="color:var(--green)">live</span><span class="dot">·</span>388 GB free`, null],
+    overview: ["Utilify", `en0<span class="dot">·</span><span style="color:var(--green)">live</span><span class="dot">·</span>388 GB free`, null],
     network: ["Network", `en0<span class="dot">·</span>866 Mb/s<span class="dot">·</span><span style="color:var(--green)">live</span>`, null],
     storage: ["Storage", `Macintosh HD<span class="dot">·</span>994 GB`, "30 days"],
-    settings: ["Settings", `Netwatch<span class="dot">·</span>0.1.0`, null],
+    settings: ["Settings", `Utilify<span class="dot">·</span>0.1.0`, null],
   }[tab];
   q("[data-ic]").innerHTML = ICONS[tab];
   q("[data-title]").textContent = head[0];

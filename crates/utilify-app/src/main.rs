@@ -1,3 +1,3 @@
 fn main() {
-    netwatch_app::run();
+    utilify_app::run();
 }

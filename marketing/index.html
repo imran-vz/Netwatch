@@ -5,12 +5,12 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="color-scheme" content="dark" />
     <link rel="icon" type="image/png" href="images/favicon.png" />
-    <title>Netwatch · Network and storage in your macOS menu bar</title>
+    <title>Utilify · Network and storage in your macOS menu bar</title>
     <meta
       name="description"
-      content="Netwatch is a small, open-source macOS menu-bar monitor written in Rust. Live download and upload rates, a traffic graph and a storage bar, one click from a dashboard with a speed test and 30 days of storage history."
+      content="Utilify is a small, open-source macOS menu-bar monitor written in Rust. Live download and upload rates, a traffic graph and a storage bar, one click from a dashboard with a speed test and 30 days of storage history."
     />
-    <meta property="og:title" content="Netwatch · Your network, in the menu bar" />
+    <meta property="og:title" content="Utilify · Your network, in the menu bar" />
     <meta
       property="og:description"
       content="A small, open-source macOS menu-bar monitor for network activity and storage, written in Rust on GPUI."
@@ -50,7 +50,7 @@
       }
 
       :root {
-        /* The dashboard's palette (crates/netwatch-app/src/ui.rs). */
+        /* The dashboard's palette (crates/utilify-app/src/ui.rs). */
         --bg: #0c0c0c;
         --panel: #0f0f0f;
         --panel-border: #1e1e1e;
@@ -1086,9 +1086,9 @@
   <body>
     <header class="nav">
       <div class="inner">
-        <a class="logo" href="#top" aria-label="Netwatch home">
+        <a class="logo" href="#top" aria-label="Utilify home">
           <img src="images/icon.webp" alt="" width="20" height="20" />
-          Netwatch
+          Utilify
         </a>
         <nav class="nav-links" aria-label="Primary">
           <a href="#menu-bar">Menu bar</a>
@@ -1121,7 +1121,7 @@
           <div class="inner hero">
             <h1>Your network, at a glance</h1>
             <p>
-              Netwatch is a small, open-source menu-bar monitor for macOS. Live
+              Utilify is a small, open-source menu-bar monitor for macOS. Live
               download and upload rates, a graph of recent traffic and your disk
               usage, with a dashboard one click away.
             </p>
@@ -1130,7 +1130,7 @@
                 <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true">
                   <path d="M8 2v8m0 0L5 7m3 3l3-3M3 13h10" stroke-linecap="round" stroke-linejoin="round" />
                 </svg>
-                Get Netwatch <kbd>I</kbd>
+                Get Utilify <kbd>I</kbd>
               </a>
               <a class="btn" href="https://github.com/imran-vz/Netwatch" data-key="c">
                 <svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
@@ -1154,7 +1154,7 @@
                 </svg>
                 <div class="app-menus"><b>Finder</b><span>File</span><span>Edit</span><span>View</span><span>Window</span></div>
                 <div class="status">
-                  <button class="nw-item" id="nwItem" aria-haspopup="true" aria-expanded="false" aria-label="Netwatch status item. Click for the dashboard, right-click for the menu.">
+                  <button class="nw-item" id="nwItem" aria-haspopup="true" aria-expanded="false" aria-label="Utilify status item. Click for the dashboard, right-click for the menu.">
                     <svg id="trayIcon" viewBox="0 0 94.5 18" width="94.5" height="18" fill="currentColor" aria-hidden="true"></svg>
                   </button>
                   <svg class="sys wide" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 3.2c2.2 0 4.2.9 5.7 2.3l1-1C13 2.8 10.6 1.8 8 1.8S3 2.8 1.3 4.5l1 1C3.8 4.1 5.8 3.2 8 3.2zm0 3c1.4 0 2.6.5 3.6 1.4l1-1C11.3 5.4 9.7 4.8 8 4.8s-3.3.6-4.6 1.8l1 1c1-.9 2.2-1.4 3.6-1.4zm0 3c.6 0 1.1.2 1.5.6L8 11.3 6.5 9.8c.4-.4.9-.6 1.5-.6z" /></svg>
@@ -1162,15 +1162,15 @@
                   <span class="wide" id="clock">Sun 18 Oct 9:41</span>
                 </div>
               </div>
-              <div class="popover tabbed" id="popover" role="dialog" aria-label="Netwatch dashboard">
-                <img src="images/tab-overview.webp" alt="Netwatch dashboard, Overview tab: a two-minute rate graph, the current download and upload rates, and a storage bar" width="604" height="758" />
+              <div class="popover tabbed" id="popover" role="dialog" aria-label="Utilify dashboard">
+                <img src="images/tab-overview.webp" alt="Utilify dashboard, Overview tab: a two-minute rate graph, the current download and upload rates, and a storage bar" width="604" height="758" />
               </div>
-              <div class="ctx" id="ctx" role="menu" aria-label="Netwatch menu">
+              <div class="ctx" id="ctx" role="menu" aria-label="Utilify menu">
                 <div class="hl">Open Dashboard</div>
                 <div class="hl sub">Refresh Every <span>›</span></div>
                 <div class="hl check">Show Speeds in Menu Bar</div>
                 <hr />
-                <div class="hl">Quit Netwatch</div>
+                <div class="hl">Quit Utilify</div>
               </div>
               <div class="tip" id="tip" role="tooltip"></div>
               <div class="demo-hint" id="hint">Click the status item for the dashboard, right-click for the menu, or hover for the numbers.</div>
@@ -1214,7 +1214,7 @@
               </div>
               <div class="anatomy-stage" id="anatomy">
                 <div class="icon-wrap">
-                  <svg class="big" id="bigIcon" viewBox="-1 -1 96.5 20" fill="currentColor" aria-label="Netwatch menu-bar icon, enlarged" role="img"></svg>
+                  <svg class="big" id="bigIcon" viewBox="-1 -1 96.5 20" fill="currentColor" aria-label="Utilify menu-bar icon, enlarged" role="img"></svg>
                   <span class="pin" style="left: 26.4%; top: -14%">1</span>
                   <span class="pin" style="left: 26.4%; top: 114%">2</span>
                   <span class="pin" style="left: 74.3%; top: -14%">3</span>
@@ -1245,7 +1245,7 @@
             <div class="inner dash">
               <div class="dash-media">
                 <div class="tabbed" id="dashShot">
-                  <img src="images/tab-overview.webp" alt="Netwatch dashboard, Overview tab: a two-minute rate graph, the current download and upload rates, and a storage bar" width="604" height="758" loading="lazy" />
+                  <img src="images/tab-overview.webp" alt="Utilify dashboard, Overview tab: a two-minute rate graph, the current download and upload rates, and a storage bar" width="604" height="758" loading="lazy" />
                 </div>
               </div>
               <ul class="dash-list">
@@ -1255,7 +1255,7 @@
                 </li>
                 <li data-tab="network" role="button" tabindex="0" aria-pressed="false">
                   <h3><span class="tab-tag">Network</span>Link and session</h3>
-                  <p>The same graph, plus the interface you're on, its link speed and how much of it is in use, and everything received and sent since Netwatch started.</p>
+                  <p>The same graph, plus the interface you're on, its link speed and how much of it is in use, and everything received and sent since Utilify started.</p>
                 </li>
                 <li data-tab="network" role="button" tabindex="0" aria-pressed="false">
                   <h3><span class="tab-tag">Network</span>Speed test on demand</h3>
@@ -1280,7 +1280,7 @@
             <div class="sec-head">
               <div>
                 <h2>Small app, careful numbers</h2>
-                <p>Netwatch reads the same counters as the kernel's own tools, and is explicit about what they mean.</p>
+                <p>Utilify reads the same counters as the kernel's own tools, and is explicit about what they mean.</p>
               </div>
             </div>
           </div>
@@ -1331,7 +1331,7 @@
           <div class="inner oss">
             <h2>Open Source</h2>
             <p>
-              Netwatch is MIT licensed and built in the open, on the same stack as
+              Utilify is MIT licensed and built in the open, on the same stack as
               <a href="https://github.com/imran-vz/Guidy">Guidy</a>: Rust, GPUI, <code>tray-icon</code> and resvg.
             </p>
             <div class="stats">
@@ -1347,7 +1347,7 @@
         <section class="band" id="install">
           <div class="gutter-grid" aria-hidden="true"></div>
           <div class="inner cta">
-            <h2>Put Netwatch in your menu bar</h2>
+            <h2>Put Utilify in your menu bar</h2>
             <p>There are no signed builds yet. With a recent Rust toolchain, the install script builds the app, puts it in Applications and opens it. Re-run it after pulling to update.</p>
             <div class="actions">
               <a class="btn primary" href="https://github.com/imran-vz/Netwatch#build-and-run">Build from source</a>
@@ -1368,7 +1368,7 @@
         <div class="band">
           <div class="inner">
             <div class="about">
-              <a class="logo" href="#top"><img src="images/icon.webp" alt="" width="20" height="20" />Netwatch</a>
+              <a class="logo" href="#top"><img src="images/icon.webp" alt="" width="20" height="20" />Utilify</a>
               <p class="fine">A macOS menu-bar monitor for network activity and storage. MIT licensed. Made by <a class="by" href="https://imran.codes">Imran</a>.</p>
             </div>
             <div>
@@ -1396,7 +1396,7 @@
 
     <script>
       (() => {
-        // ── A simulated network, drawn the way crates/netwatch-core/src/icon.rs
+        // ── A simulated network, drawn the way crates/utilify-core/src/icon.rs
         //    draws the real icon (same sizes, slots and formatting).
         const SLOTS = 24;
         const BAR_PITCH = 2;
@@ -1602,10 +1602,10 @@
         // ── Dashboard screenshots with working tabs. Each tab is its own
         //    screenshot; buttons over the tab bar and the › button swap them.
         const TABS = {
-          overview: { h: 758, alt: "Netwatch dashboard, Overview tab: a two-minute rate graph, the current download and upload rates, and a storage bar" },
-          network: { h: 1120, alt: "Netwatch dashboard, Network tab: the rate graph, link speed and use, totals for the session, and a speed test result with latency idle and under load" },
-          storage: { h: 768, alt: "Netwatch dashboard, Storage tab: a chart of used disk space over time with a dashed trend line, and a storage bar" },
-          settings: { h: 1044, alt: "Netwatch dashboard, Settings tab: refresh interval, speeds in the menu bar, storage colour thresholds, the red-zone notification, and Quit" },
+          overview: { h: 758, alt: "Utilify dashboard, Overview tab: a two-minute rate graph, the current download and upload rates, and a storage bar" },
+          network: { h: 1120, alt: "Utilify dashboard, Network tab: the rate graph, link speed and use, totals for the session, and a speed test result with latency idle and under load" },
+          storage: { h: 768, alt: "Utilify dashboard, Storage tab: a chart of used disk space over time with a dashed trend line, and a storage bar" },
+          settings: { h: 1044, alt: "Utilify dashboard, Settings tab: refresh interval, speeds in the menu bar, storage colour thresholds, the red-zone notification, and Quit" },
         };
         const NAMES = Object.keys(TABS);
         let preloaded = false;

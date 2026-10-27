@@ -1,6 +1,12 @@
 [workspace]
 resolver = "2"
-members = ["crates/netwatch-core", "crates/netwatch-app"]
+members = [
+    "crates/utilify-core",
+    "crates/utilify-chef",
+    "crates/utilify-app",
+    "crates/utilify-smc",
+    "crates/utilify-fanhelper",
+]
 
 [workspace.package]
 version = "0.1.0"

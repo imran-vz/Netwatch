@@ -1,29 +1,32 @@
-//! The dashboard popover shown under the status item, in five tabs:
+//! The dashboard popover shown under the status item, in six tabs:
 //! Overview (rates, storage and keep awake at a glance), Network (link, session totals
 //! and the speed test), Storage (used space over time), Awake (keep-awake
-//! sessions, see [`awake`]) and Settings.
+//! sessions, see [`awake`]), Fans (fan control and temperatures, see
+//! [`fans`]) and Settings.
 //! The look follows `design/dashboard-mock.html`; the pieces live in
 //! [`crate::ui`].
 
 use crate::stats::{self, SpeedTest, Stats};
 use crate::ui::{self, color::*, px};
+use gpui_kit::component::input::{InputEvent, InputState};
 use gpui_kit::component::{h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
-use netwatch_core::disk::DiskUsage;
-use netwatch_core::disk_history::{self, DiskSample};
-use netwatch_core::format;
-use netwatch_core::history::{self, History, RatePoint};
-use netwatch_core::icon::MIN_PEAK;
-use netwatch_core::net::NetRates;
-use netwatch_core::settings::{INTERVALS_MS, Settings};
-use netwatch_core::speedtest;
 use std::time::{Duration, Instant};
+use utilify_core::disk::DiskUsage;
+use utilify_core::disk_history::{self, DiskSample};
+use utilify_core::format;
+use utilify_core::history::{self, History, RatePoint};
+use utilify_core::icon::MIN_PEAK;
+use utilify_core::net::NetRates;
+use utilify_core::settings::{INTERVALS_MS, Settings};
+use utilify_core::speedtest;
 
 mod awake;
+mod fans;
 
 pub const WIDTH: f32 = ui::CARD_W + 2. * ui::SHADOW;
-/// Tall enough for the longest tab (Awake); the rest of the window is
+/// Tall enough for the longest tab (Fans); the rest of the window is
 /// transparent, and clicking it closes the dashboard.
 pub const HEIGHT: f32 = 1130.;
 /// Bars in the rate graph; each covers `HISTORY_LEN / BARS` samples.
@@ -37,15 +40,17 @@ pub enum Tab {
     Network,
     Storage,
     Awake,
+    Fans,
     Settings,
 }
 
 impl Tab {
-    const ALL: [Tab; 5] = [
+    const ALL: [Tab; 6] = [
         Tab::Overview,
         Tab::Network,
         Tab::Storage,
         Tab::Awake,
+        Tab::Fans,
         Tab::Settings,
     ];
 
@@ -55,6 +60,7 @@ impl Tab {
             Tab::Network => "Network",
             Tab::Storage => "Storage",
             Tab::Awake => "Awake",
+            Tab::Fans => "Fans",
             Tab::Settings => "Settings",
         }
     }
@@ -82,18 +88,31 @@ pub struct Dashboard {
     speed_test_open: bool,
     /// Pointer x over the storage chart, in design units from its left edge.
     storage_hover: Option<f32>,
-    _subscriptions: [Subscription; 2],
+    /// The Fans tab's preset name field, the preset being renamed, and a
+    /// note under the field.
+    preset_name: Entity<InputState>,
+    fan_renaming: Option<String>,
+    fan_hint: Option<SharedString>,
+    /// The Settings tab's menu-bar sensor list is unfolded.
+    temp_menu_open: bool,
+    _subscriptions: [Subscription; 3],
 }
 
 impl Dashboard {
     pub fn new(stats: Entity<Stats>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let observe = cx.observe(&stats, |_, _, cx| cx.notify());
         // Dismiss like a popover when focus moves elsewhere. Debug builds
-        // can pin it open with NETWATCH_DEV_PIN, for inspecting it.
-        let pinned = cfg!(debug_assertions) && std::env::var_os("NETWATCH_DEV_PIN").is_some();
+        // can pin it open with UTILIFY_DEV_PIN, for inspecting it.
+        let pinned = cfg!(debug_assertions) && std::env::var_os("UTILIFY_DEV_PIN").is_some();
         let activation = cx.observe_window_activation(window, move |_, window, cx| {
             if !window.is_window_active() && !pinned {
                 dismiss(window, cx);
+            }
+        });
+        let preset_name = cx.new(|cx| InputState::new(window, cx).placeholder("Preset name"));
+        let enter = cx.subscribe_in(&preset_name, window, |this, _, ev, window, cx| {
+            if let InputEvent::PressEnter { .. } = ev {
+                this.save_preset(window, cx);
             }
         });
         Self {
@@ -102,13 +121,18 @@ impl Dashboard {
             speed_test_open: state(cx).speed_test_open,
             interval_menu_open: false,
             storage_hover: None,
-            _subscriptions: [observe, activation],
+            preset_name,
+            fan_renaming: None,
+            fan_hint: None,
+            temp_menu_open: false,
+            _subscriptions: [observe, activation, enter],
         }
     }
 
     fn set_tab(&mut self, tab: Tab, cx: &mut Context<Self>) {
         self.tab = tab;
         self.interval_menu_open = false;
+        self.temp_menu_open = false;
         self.storage_hover = None;
         state(cx).tab = tab;
         cx.notify();
@@ -127,6 +151,7 @@ struct Snapshot {
     disk_samples: Vec<DiskSample>,
     speed_test: SpeedTest,
     awake: awake::Snapshot,
+    fans: fans::Snapshot,
 }
 
 impl Snapshot {
@@ -143,6 +168,7 @@ impl Snapshot {
             disk_samples: stats.disk_history.with_live(disk_history::unix_now(), disk),
             speed_test: stats.speed_test.clone(),
             awake: awake::Snapshot::read(stats),
+            fans: fans::Snapshot::read(stats),
         }
     }
 
@@ -256,7 +282,7 @@ impl Dashboard {
                 if let Some(d) = s.disk {
                     parts.push(text(format!("{} free", format::bytes(d.available))));
                 }
-                ("layout-grid", "Netwatch".into(), parts, None)
+                ("layout-grid", "Utilify".into(), parts, None)
             }
             Tab::Network => {
                 let mut parts = vec![];
@@ -283,11 +309,15 @@ impl Dashboard {
                 let (title, parts) = awake::header(s);
                 ("pill", title, parts, None)
             }
+            Tab::Fans => {
+                let (title, parts, chip) = fans::header(s);
+                ("fan", title, parts, chip)
+            }
             Tab::Settings => (
                 "sliders-horizontal",
                 "Settings".into(),
                 vec![
-                    text(netwatch_core::PRODUCT_NAME),
+                    text(utilify_core::PRODUCT_NAME),
                     text(env!("CARGO_PKG_VERSION")),
                 ],
                 None,
@@ -299,10 +329,22 @@ impl Dashboard {
             title,
             ui::dotted(subtitle),
             chip,
-            ui::icon_button("next-tab", ui::icon("chevron-right", 18., fg()))
-                .cursor_pointer()
-                .hover(|s| s.bg(rgb(0x222222)))
-                .on_click(cx.listener(|this, _, _, cx| this.set_tab(this.tab.next(), cx))),
+            h_flex()
+                .id("header-actions")
+                .flex_none()
+                .gap(px(8.))
+                .child(
+                    ui::icon_button("open-workbench", ui::icon("chef-hat", 18., fg()))
+                        .cursor_pointer()
+                        .hover(|s| s.bg(rgb(0x222222)))
+                        .on_click(|_, _, cx| crate::workbench::open(cx)),
+                )
+                .child(
+                    ui::icon_button("next-tab", ui::icon("chevron-right", 18., fg()))
+                        .cursor_pointer()
+                        .hover(|s| s.bg(rgb(0x222222)))
+                        .on_click(cx.listener(|this, _, _, cx| this.set_tab(this.tab.next(), cx))),
+                ),
         )
     }
 
@@ -414,8 +456,8 @@ impl Dashboard {
 
     fn settings(&self, s: &Snapshot, cx: &mut Context<Self>) -> Div {
         let show_rates = s.settings.show_rates;
+        // One list of rows, each ruled off from the one above.
         v_flex()
-            .gap(px(22.))
             .child(
                 v_flex()
                     .child(setting_row(
@@ -431,17 +473,134 @@ impl Dashboard {
                         ui::toggle("show-rates", show_rates).on_click(|_, _, cx| {
                             crate::update_settings(cx, |s| s.show_rates = !s.show_rates);
                         }),
+                    ))
+                    .child(setting_row(
+                        "Show temperature in menu bar",
+                        &format!("{}, like 80°C", self.menu_sensor_name(s)),
+                        false,
+                        ui::toggle("show-temp", s.settings.show_temp).on_click(|_, _, cx| {
+                            crate::update_settings(cx, |s| s.show_temp = !s.show_temp);
+                        }),
+                    ))
+                    .when(s.settings.show_temp, |v| {
+                        v.child(self.temp_sensor_picker(s, cx))
+                    })
+                    .child(setting_row(
+                        "Show fan speed in menu bar",
+                        "The fastest fan, like 5775rpm",
+                        false,
+                        ui::toggle("show-fan-rpm", s.settings.show_fan_rpm).on_click(|_, _, cx| {
+                            crate::update_settings(cx, |s| s.show_fan_rpm = !s.show_fan_rpm);
+                        }),
                     )),
             )
             .child(storage_colors(s))
+            .child(setting_row(
+                "Notify in the red",
+                &format!(
+                    "When the startup disk passes {:.0}%",
+                    s.settings.storage_thresholds().1 * 100.0
+                ),
+                false,
+                ui::toggle("storage-notify", s.settings.storage_notify).on_click(|_, _, cx| {
+                    crate::update_settings(cx, |s| s.storage_notify = !s.storage_notify);
+                }),
+            ))
             .child(
                 h_flex()
+                    .pt(px(8.))
                     .gap(px(14.))
                     .child(ui::button("reset", "Reset", false).on_click(|_, _, cx| {
                         crate::update_settings(cx, |s| *s = Settings::default());
                     }))
                     .child(ui::button("quit", "Quit", true).on_click(|_, _, cx| cx.quit())),
             )
+    }
+
+    fn menu_sensor_name(&self, s: &Snapshot) -> String {
+        let id = &s.settings.menu_temp_sensor;
+        utilify_core::sensors::find(fans::sensor_list_of(s), id)
+            .map(|x| x.name.clone())
+            .unwrap_or_else(|| {
+                if id == utilify_core::sensors::CPU_AVERAGE_ID {
+                    "CPU Core Average".into()
+                } else {
+                    id.clone()
+                }
+            })
+    }
+
+    /// Which sensor the menu bar shows: the current one, unfolding to the
+    /// whole list.
+    fn temp_sensor_picker(&self, s: &Snapshot, cx: &mut Context<Self>) -> Div {
+        let open = self.temp_menu_open;
+        let current = s.settings.menu_temp_sensor.clone();
+        let head = h_flex()
+            .id("temp-sensor")
+            .h(px(33.))
+            .px(px(12.))
+            .gap(px(8.))
+            .justify_between()
+            .rounded(px(8.))
+            .border_1()
+            .border_color(if open { focus() } else { card_border() })
+            .text_size(px(15.))
+            .cursor_pointer()
+            .child(self.menu_sensor_name(s))
+            .child(ui::icon(
+                if open { "chevron-up" } else { "chevron-down" },
+                12.,
+                fg2(),
+            ))
+            .on_click(cx.listener(|this, _, _, cx| {
+                this.temp_menu_open = !this.temp_menu_open;
+                cx.notify();
+            }));
+        let list = open.then(|| {
+            let sensors = fans::sensor_list_of(s);
+            let mut v = v_flex()
+                .id("temp-sensor-list")
+                .max_h(px(260.))
+                .overflow_y_scroll()
+                .p(px(4.))
+                .rounded(px(10.))
+                .border_1()
+                .border_color(card_border())
+                .bg(rgb(0x141414));
+            if sensors.is_empty() {
+                v = v.child(ui::ui_text(14.5, fg3()).p(px(6.)).child("Reading sensors…"));
+            }
+            for sensor in sensors {
+                let selected = sensor.id == current;
+                let id = sensor.id.clone();
+                v = v.child(
+                    h_flex()
+                        .id(SharedString::from(format!("temp-{}", sensor.id)))
+                        .h(px(31.))
+                        .px(px(8.))
+                        .gap(px(8.))
+                        .rounded(px(7.))
+                        .text_size(px(14.5))
+                        .text_color(if selected { fg() } else { fg2() })
+                        .cursor_pointer()
+                        .hover(|s| s.bg(raised()).text_color(fg()))
+                        .child(div().flex_1().child(sensor.name.clone()))
+                        .child(ui::mono(13.5, fg3()).child(format!("{:.0}°C", sensor.celsius)))
+                        .child(
+                            div()
+                                .w(px(14.))
+                                .children(selected.then(|| ui::icon("check", 14., ok()))),
+                        )
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.temp_menu_open = false;
+                            let id = id.clone();
+                            crate::update_settings(cx, move |s| s.menu_temp_sensor = id);
+                        })),
+                );
+            }
+            v
+        });
+        v_flex().gap(px(8.)).pb(px(14.)).child(head).children(list)
     }
 
     fn interval_dropdown(&self, settings: &Settings, cx: &mut Context<Self>) -> Div {
@@ -474,7 +633,7 @@ impl Dashboard {
                 let selected = ms == settings.interval_ms;
                 // The graph keeps a fixed number of samples, so the interval
                 // sets how far back it reaches.
-                let reach = Duration::from_millis(ms) * netwatch_core::monitor::HISTORY_LEN as u32;
+                let reach = Duration::from_millis(ms) * utilify_core::monitor::HISTORY_LEN as u32;
                 h_flex()
                     .id(ElementId::Integer(ms))
                     .h(px(33.))
@@ -538,7 +697,7 @@ impl Dashboard {
     }
 }
 
-/// Where the storage bar turns yellow and red, and the red-zone alert.
+/// Where the storage bar turns yellow and red: a settings row of its own.
 fn storage_colors(s: &Snapshot) -> Div {
     const STEP: u8 = 5;
     let (yellow, red) = s.settings.storage_thresholds();
@@ -557,13 +716,18 @@ fn storage_colors(s: &Snapshot) -> Div {
             .child(ui::ui_text(14.5, fg2()).child(label.to_string()))
             .child(stepper)
     };
-    let notify = s.settings.storage_notify;
     v_flex()
         .gap(px(12.))
-        .child(ui::label_row(
-            "Storage colours",
-            ui::ui_text(14.5, fg3()).child("% used"),
-        ))
+        .py(px(14.))
+        .border_t_1()
+        .border_color(sep())
+        .child(
+            h_flex()
+                .justify_between()
+                .items_baseline()
+                .child(ui::ui_text(17., fg()).child("Storage colours"))
+                .child(ui::ui_text(14.5, fg3()).child("% used")),
+        )
         .child(ui::zone_bar(
             yellow,
             red,
@@ -591,14 +755,6 @@ fn storage_colors(s: &Snapshot) -> Div {
                     ),
                 )),
         )
-        .child(setting_row(
-            "Notify in the red",
-            &format!("When the startup disk passes {r}%"),
-            false,
-            ui::toggle("storage-notify", notify).on_click(|_, _, cx| {
-                crate::update_settings(cx, |s| s.storage_notify = !s.storage_notify);
-            }),
-        ))
 }
 
 fn setting_row(title: &str, detail: &str, first: bool, control: impl IntoElement) -> Div {
@@ -960,11 +1116,15 @@ fn storage_chart(s: &Snapshot, hover: Option<f32>, view: WeakEntity<Dashboard>) 
                     .left(px(PAD_X + 20.))
                     .top(px((y1 - 20.).max(4.))),
             )
-            .child(
+            .child({
+                // Right-aligned over its guide, unless that puts it on the
+                // newest point's marker: then it steps left of the marker.
+                let top = (y0 - 20.).max(4.);
+                let on_marker = y1 + 6. > top && y1 - 6. < top + 16.;
                 label(format::bytes(first.used))
-                    .right(px(10.))
-                    .top(px((y0 - 20.).max(4.))),
-            )
+                    .right(px(if on_marker { w - x1 + 10. } else { 10. }))
+                    .top(px(top))
+            })
         })
         .children(tooltip)
         .child(
@@ -997,6 +1157,7 @@ impl Render for Dashboard {
             Tab::Network => self.network(&s, cx),
             Tab::Storage => self.storage(&s, cx),
             Tab::Awake => awake::tab(&s, cx),
+            Tab::Fans => fans::tab(self, &s, cx),
             Tab::Settings => self.settings(&s, cx),
         };
         let card = ui::card(
@@ -1119,7 +1280,7 @@ pub fn open(cx: &mut App) {
         is_resizable: false,
         is_minimizable: false,
         window_background: WindowBackgroundAppearance::Transparent,
-        app_id: Some(netwatch_core::APP_IDENTIFIER.into()),
+        app_id: Some(utilify_core::APP_IDENTIFIER.into()),
         ..Default::default()
     };
     let stats = stats::stats(cx);
@@ -1192,6 +1353,8 @@ mod tests {
     fn tabs_cycle() {
         assert_eq!(Tab::Overview.next(), Tab::Network);
         assert_eq!(Tab::Storage.next(), Tab::Awake);
+        assert_eq!(Tab::Awake.next(), Tab::Fans);
+        assert_eq!(Tab::parse("fans"), Some(Tab::Fans));
         assert_eq!(Tab::parse("awake"), Some(Tab::Awake));
         assert_eq!(Tab::Settings.next(), Tab::Overview);
         assert_eq!(Tab::Storage.index(), 2);

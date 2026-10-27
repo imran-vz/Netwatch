@@ -1,12 +1,14 @@
 //! Sample the real counters for a few seconds and write the menu-bar icon as
 //! PNGs (template black, plus previews on light and dark menu bars).
 //!
-//! `cargo run -p netwatch-core --example render_icon -- [out_dir] [seconds]`
+//! `cargo run -p utilify-core --example render_icon -- [out_dir] [seconds]`
+//! (`UTILIFY_AWAKE=1` adds the keep-awake pill, `UTILIFY_FANS=1` the
+//! temperature and fan readout)
 
-use netwatch_core::icon::{IconRenderer, TrayContent};
-use netwatch_core::monitor::Monitor;
 use resvg::tiny_skia::{Color, IntSize, Pixmap};
 use std::time::{Duration, Instant};
+use utilify_core::icon::{IconRenderer, Readout, TrayContent};
+use utilify_core::monitor::Monitor;
 
 fn main() -> anyhow::Result<()> {
     let mut args = std::env::args().skip(1);
@@ -21,7 +23,7 @@ fn main() -> anyhow::Result<()> {
     }
     let font = std::fs::read(concat!(
         env!("CARGO_MANIFEST_DIR"),
-        "/../../assets/fonts/lilex/Lilex-Regular.ttf"
+        "/../../assets/fonts/lilex/Lilex-SemiBold.ttf"
     ))?;
     let r = m.rates();
     println!(
@@ -31,13 +33,28 @@ fn main() -> anyhow::Result<()> {
         r.link,
         m.disk()
     );
-    let points = m.history().tail(netwatch_core::icon::SLOTS);
+    let points = m.history().tail(utilify_core::icon::SLOTS);
     let content = TrayContent {
         points: &points,
         rates: Some((r.down, r.up)),
         disk_used: m.disk().map(|d| d.used_fraction()),
-        // NETWATCH_AWAKE=1 previews the keep-awake pill.
-        awake: std::env::var_os("NETWATCH_AWAKE").is_some(),
+        // UTILIFY_AWAKE=1 previews the keep-awake pill.
+        awake: std::env::var_os("UTILIFY_AWAKE").is_some(),
+        // UTILIFY_FANS=1 adds the readout: CPU average and fastest fan.
+        readout: if std::env::var_os("UTILIFY_FANS").is_some() {
+            let fans = utilify_smc::Smc::open()
+                .map(|smc| utilify_core::fans::read(&smc).fans)
+                .unwrap_or_default();
+            let rpm = fans.iter().map(|f| f.current).reduce(f32::max);
+            Readout {
+                celsius: Some(utilify_core::sensors::cpu_average(
+                    &utilify_core::sensors::read_all(),
+                )),
+                rpm: Some(rpm),
+            }
+        } else {
+            Readout::default()
+        },
     };
     let bmp = IconRenderer::new([font]).tray_icon(&content, 4.0)?;
     let size = IntSize::from_wh(bmp.width, bmp.height).unwrap();

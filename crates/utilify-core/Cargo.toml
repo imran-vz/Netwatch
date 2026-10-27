@@ -1,12 +1,12 @@
 [package]
-name = "netwatch-core"
-description = "Netwatch backend: network counters, disk usage, history and the tray icon renderer"
+name = "utilify-core"
+description = "Utilify backend: network counters, disk usage, history, sensors, fan control and the tray icon renderer"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 
 [lib]
-name = "netwatch_core"
+name = "utilify_core"
 
 [dependencies]
 anyhow = "1"
@@ -16,10 +16,10 @@ serde_json = "1"
 dirs = "6"
 libc = "0.2"
 resvg = "0.45"
+tempfile = "3"
+jiff = "0.2"
+utilify-smc = { path = "../utilify-smc" }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6"
 objc2-foundation = { version = "0.3", features = ["NSURL", "NSDictionary", "NSArray", "NSString", "NSValue", "NSError"] }
-
-[dev-dependencies]
-tempfile = "3"

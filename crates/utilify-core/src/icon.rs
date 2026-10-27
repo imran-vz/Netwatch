@@ -7,7 +7,9 @@
 //!  ▲ 1.4MB/s   ██████░░░░░░   storage: solid = used, translucent = free
 //! ```
 //!
-//! A keep-awake session adds a small pill on the left.
+//! A keep-awake session adds a small pill on the left, and the fan
+//! readout (a temperature and/or the fastest fan, `80°C` over `5775rpm`)
+//! sits between it and the rates.
 //!
 //! The image is drawn in black with varying alpha and shown as a macOS
 //! *template* image, so the menu bar tints it for light and dark mode.
@@ -29,8 +31,23 @@ pub const GRAPH_WIDTH_PT: f32 = SLOTS as f32 * BAR_PITCH - (BAR_PITCH - BAR_W);
 pub const TEXT_WIDTH_PT: f32 = 47.0;
 /// Width of the keep-awake pill column, when shown, including its gap.
 pub const AWAKE_WIDTH_PT: f32 = 8.0;
+/// Advance of one monospace character, in ems (Lilex, like Plex Mono, is
+/// 600 units per 1000).
+const CHAR_EM: f32 = 0.6;
+/// Gap after a text column.
+const TEXT_GAP: f32 = 4.0;
+/// The readout reserves room for this many characters per line, so the
+/// item doesn't change width as values change: `100°C`, `5775rpm`.
+const TEMP_CHARS: usize = 5;
+const RPM_CHARS: usize = 7;
+/// A readout with one line uses a larger size, centred.
+const SINGLE_FONT_PT: f32 = 10.0;
 /// Monospace family used for the rate text (embedded by the app).
 pub const FONT_FAMILY: &str = "Lilex";
+/// SemiBold: Regular strokes are too thin to read at menu-bar size against
+/// busy or translucent backgrounds. (A template image is tinted to a single
+/// colour, so a drop shadow isn't an option.)
+const FONT_WEIGHT: u16 = 600;
 /// Below this peak the graph stays low, so idle chatter (a few KB/s) doesn't
 /// fill the icon.
 pub const MIN_PEAK: f64 = 16_000.0;
@@ -67,6 +84,62 @@ pub struct TrayContent<'a> {
     pub disk_used: Option<f64>,
     /// A keep-awake session is running: show the pill.
     pub awake: bool,
+    /// Temperature and fan speed text.
+    pub readout: Readout,
+}
+
+/// The fan readout. Each line shows when `Some`; `Some(None)` is a value
+/// not read yet, drawn as `--`.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Readout {
+    pub celsius: Option<Option<f32>>,
+    pub rpm: Option<Option<f32>>,
+}
+
+impl Readout {
+    fn lines(&self) -> Vec<(String, usize)> {
+        let mut lines = Vec::new();
+        if let Some(c) = self.celsius {
+            lines.push((temp_text(c), TEMP_CHARS));
+        }
+        if let Some(r) = self.rpm {
+            lines.push((rpm_text(r), RPM_CHARS));
+        }
+        lines
+    }
+
+    fn font_pt(&self) -> f32 {
+        if self.celsius.is_some() && self.rpm.is_some() {
+            FONT_PT
+        } else {
+            SINGLE_FONT_PT
+        }
+    }
+
+    /// Column width including its gap; 0 when there's nothing to show.
+    pub fn width(&self) -> f32 {
+        let chars = self.lines().iter().map(|l| l.1).max().unwrap_or(0);
+        if chars == 0 {
+            return 0.0;
+        }
+        (chars as f32 * self.font_pt() * CHAR_EM + TEXT_GAP).ceil()
+    }
+}
+
+/// `80°C`, or `--°C` before the first reading.
+pub fn temp_text(c: Option<f32>) -> String {
+    match c {
+        Some(c) => format!("{c:.0}°C"),
+        None => "--°C".into(),
+    }
+}
+
+/// `5775rpm`, or `--rpm` before the first reading.
+pub fn rpm_text(rpm: Option<f32>) -> String {
+    match rpm {
+        Some(r) => format!("{r:.0}rpm"),
+        None => "--rpm".into(),
+    }
 }
 
 impl TrayContent<'_> {
@@ -78,6 +151,26 @@ impl TrayContent<'_> {
                 0.0
             }
             + if self.awake { AWAKE_WIDTH_PT } else { 0.0 }
+            + self.readout.width()
+    }
+}
+
+fn readout_column(s: &mut String, readout: &Readout) {
+    let width = readout.width();
+    let lines = readout.lines();
+    let font = readout.font_pt();
+    // Two lines sit where the rates' do; one is centred.
+    let ys: &[f32] = if lines.len() == 2 {
+        &[7.5, 16.5]
+    } else {
+        &[12.5]
+    };
+    for ((text, _), y) in lines.iter().zip(ys) {
+        let _ = write!(
+            s,
+            r#"<text x="{x}" y="{y}" font-family="{FONT_FAMILY}" font-weight="{FONT_WEIGHT}" font-size="{font}" text-anchor="end" xml:space="preserve">{text}</text>"#,
+            x = width - TEXT_GAP,
+        );
     }
 }
 
@@ -86,12 +179,12 @@ fn text_column(s: &mut String, down: f64, up: f64) {
     // ▼ (received) on the download line, ▲ (sent) on the upload line.
     let _ = write!(
         s,
-        r#"<path d="M0.5 3 L5.5 3 L3 6.5 Z"/><path d="M0.5 15.5 L5.5 15.5 L3 12 Z" fill-opacity="0.75"/>"#
+        r#"<path d="M0.5 3 L5.5 3 L3 6.5 Z"/><path d="M0.5 15.5 L5.5 15.5 L3 12 Z" fill-opacity="0.85"/>"#
     );
-    for (y, v, opacity) in [(7.5, down, 1.0), (16.5, up, 0.75)] {
+    for (y, v, opacity) in [(7.5, down, 1.0), (16.5, up, 0.85)] {
         let _ = write!(
             s,
-            r#"<text x="{x}" y="{y}" font-family="{FONT_FAMILY}" font-size="{FONT_PT}" text-anchor="end" fill-opacity="{opacity}" xml:space="preserve">{t}</text>"#,
+            r#"<text x="{x}" y="{y}" font-family="{FONT_FAMILY}" font-weight="{FONT_WEIGHT}" font-size="{FONT_PT}" text-anchor="end" fill-opacity="{opacity}" xml:space="preserve">{t}</text>"#,
             x = TEXT_WIDTH_PT - 4.0,
             t = crate::format::rate_menu(v)
         );
@@ -114,8 +207,14 @@ pub fn tray_svg(content: &TrayContent) -> String {
             r#"<clipPath id="p"><rect x="0.75" y="3.5" width="5" height="11" rx="2.5"/></clipPath><g clip-path="url(#p)"><rect x="0.75" y="3.5" width="5" height="5.1"/><rect x="0.75" y="9.4" width="5" height="5.1" fill-opacity="0.55"/></g>"#,
         );
     }
+    let pill = if content.awake { AWAKE_WIDTH_PT } else { 0.0 };
+    if content.readout.width() > 0.0 {
+        let _ = write!(s, r#"<g transform="translate({pill} 0)">"#);
+        readout_column(&mut s, &content.readout);
+        s.push_str("</g>");
+    }
     if let Some((down, up)) = content.rates {
-        let tx = if content.awake { AWAKE_WIDTH_PT } else { 0.0 };
+        let tx = pill + content.readout.width();
         let _ = write!(s, r#"<g transform="translate({tx} 0)">"#);
         text_column(&mut s, down, up);
         s.push_str("</g>");
@@ -283,7 +382,7 @@ mod tests {
     fn lilex() -> Vec<u8> {
         let path = concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/../../assets/fonts/lilex/Lilex-Regular.ttf"
+            "/../../assets/fonts/lilex/Lilex-SemiBold.ttf"
         );
         std::fs::read(path).expect("Lilex font in assets")
     }
@@ -300,6 +399,7 @@ mod tests {
             rates: None,
             disk_used: Some(0.75),
             awake: false,
+            readout: Readout::default(),
         };
         let bmp = IconRenderer::new([]).tray_icon(&content, 2.0).unwrap();
         let w = (GRAPH_WIDTH_PT * 2.0).round() as u32;
@@ -323,6 +423,7 @@ mod tests {
             rates: Some((1_200_000.0, 30_000.0)),
             disk_used: None,
             awake: false,
+            readout: Readout::default(),
         };
         let svg = tray_svg(&content);
         assert!(
@@ -342,5 +443,63 @@ mod tests {
             .filter(|&(x, y)| alpha_at(&bmp, x, y) > 128)
             .count();
         assert!(text_px > 40, "only {text_px} text pixels");
+    }
+
+    #[test]
+    fn readout_sits_between_the_pill_and_the_rates() {
+        let both = Readout {
+            celsius: Some(Some(80.4)),
+            rpm: Some(Some(5775.0)),
+        };
+        let content = TrayContent {
+            rates: Some((0.0, 0.0)),
+            awake: true,
+            readout: both,
+            ..Default::default()
+        };
+        assert_eq!(
+            content.width(),
+            AWAKE_WIDTH_PT + both.width() + TEXT_WIDTH_PT + GRAPH_WIDTH_PT
+        );
+        let svg = tray_svg(&content);
+        assert!(
+            svg.contains(">80°C</text>") && svg.contains(">5775rpm</text>"),
+            "{svg}"
+        );
+        assert!(svg.contains(&format!(
+            r#"translate({} 0)"#,
+            AWAKE_WIDTH_PT + both.width()
+        )));
+        // Fixed width whatever the values.
+        let other = Readout {
+            celsius: Some(None),
+            rpm: Some(Some(0.0)),
+        };
+        assert_eq!(other.width(), both.width());
+        assert!(
+            tray_svg(&TrayContent {
+                readout: other,
+                ..Default::default()
+            })
+            .contains(">--°C</text>")
+        );
+        assert_eq!(Readout::default().width(), 0.0);
+
+        // One line alone is drawn larger, centred, and renders glyphs.
+        let temp = TrayContent {
+            readout: Readout {
+                celsius: Some(Some(55.0)),
+                rpm: None,
+            },
+            ..Default::default()
+        };
+        let svg = tray_svg(&temp);
+        assert!(svg.contains(r#"y="12.5""#), "{svg}");
+        let bmp = IconRenderer::new([lilex()]).tray_icon(&temp, 2.0).unwrap();
+        let ink = (0..(temp.readout.width() * 2.0) as u32)
+            .flat_map(|x| (0..36).map(move |y| (x, y)))
+            .filter(|&(x, y)| alpha_at(&bmp, x, y) > 128)
+            .count();
+        assert!(ink > 40, "only {ink} text pixels");
     }
 }

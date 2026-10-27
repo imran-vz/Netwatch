@@ -1,5 +1,5 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
-  <!-- Netwatch app icon. Source of truth for netwatch.png and netwatch.icns;
+  <!-- Utilify app icon. Source of truth for utilify.png and utilify.icns;
        regenerate them with the render_app_icon example. -->
 <defs><clipPath id="body"><rect x="100" y="100" width="824" height="824" rx="185"/></clipPath>
 <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#ffffff"/><stop offset="1" stop-color="#e3e7ee"/></linearGradient>

@@ -1,5 +1,5 @@
 //! Storage use over time, kept across launches:
-//! `<data dir>/dev.netwatch.app/disk_history.json`.
+//! `<data dir>/dev.utilify.app/disk_history.json`.
 
 use crate::disk::DiskUsage;
 use serde::{Deserialize, Serialize};
@@ -97,14 +97,9 @@ pub fn load(path: &Path) -> DiskHistory {
     }
 }
 
-/// Save atomically (temp file + rename).
+/// Save atomically.
 pub fn save(path: &Path, history: &DiskHistory) -> std::io::Result<()> {
-    if let Some(dir) = path.parent() {
-        std::fs::create_dir_all(dir)?;
-    }
-    let tmp = path.with_extension("json.tmp");
-    std::fs::write(&tmp, serde_json::to_vec(history)?)?;
-    std::fs::rename(tmp, path)
+    crate::write_atomic(path, &serde_json::to_vec(history)?)
 }
 
 /// Polyline points for `samples` (oldest first) within a `width` x `height`

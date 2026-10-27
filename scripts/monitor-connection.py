@@ -2,7 +2,7 @@
 """Read-only macOS connection monitor. Python 3 standard library only.
 
 Run: python3 scripts/monitor-connection.py
-Logs: ~/Library/Logs/NetwatchDiagnostics/connection.jsonl (rotated, <=25 MiB)
+Logs: ~/Library/Logs/UtilifyDiagnostics/connection.jsonl (rotated, <=25 MiB)
 Stop: Ctrl-C, or send SIGTERM to the PID printed at startup.
 Logs contain local IP addresses, DNS/VPN configuration and possibly Wi-Fi names;
 review before sharing publicly. No packet capture, browser history or credentials.
@@ -157,7 +157,7 @@ def main():
     parser.add_argument("--duration-hours", type=float, default=24)
     parser.add_argument("--once", action="store_true", help="collect one sample and snapshot, then exit")
     parser.add_argument("--ap-ip", help="access point management IPv4 address; enables separate AP probes")
-    parser.add_argument("--log-dir", type=Path, default=Path.home() / "Library/Logs/NetwatchDiagnostics")
+    parser.add_argument("--log-dir", type=Path, default=Path.home() / "Library/Logs/UtilifyDiagnostics")
     args = parser.parse_args()
     if args.interval < 10 or args.duration_hours <= 0:
         parser.error("interval must be >=10 and duration-hours must be positive")

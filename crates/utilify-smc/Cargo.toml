@@ -1,0 +1,11 @@
+[package]
+name = "utilify-smc"
+description = "Utilify: Apple SMC client (keys, fans, temperatures) and the fan helper's wire protocol"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+name = "utilify_smc"
+
+[dependencies]

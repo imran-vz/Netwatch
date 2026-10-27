@@ -1,20 +1,22 @@
 [package]
-name = "netwatch-app"
-description = "Netwatch: menu-bar network and storage monitor (GPUI)"
+name = "utilify-app"
+description = "Utilify: menu-bar network and storage monitor (GPUI)"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 
 [lib]
-name = "netwatch_app"
+name = "utilify_app"
 path = "src/lib.rs"
 
 [[bin]]
-name = "netwatch"
+name = "utilify"
 path = "src/main.rs"
 
 [dependencies]
-netwatch-core = { path = "../netwatch-core" }
+utilify-core = { path = "../utilify-core" }
+utilify-smc = { path = "../utilify-smc" }
+utilify-chef = { path = "../utilify-chef" }
 gpui-kit = "=0.7.3"
 tray-icon = "0.24"
 log = "0.4"
@@ -33,19 +35,19 @@ raw-window-handle = "0.6"
 [dev-dependencies]
 gpui-kit = { version = "=0.7.3", features = ["test-support"] }
 
-# `cargo packager --release -p netwatch-app` (paths are relative to this file).
+# `cargo packager --release -p utilify-app` (paths are relative to this file).
 # Unsigned: macOS gets an ad-hoc signature ("-").
 [package.metadata.packager]
-product-name = "Netwatch"
-identifier = "dev.netwatch.app"
+product-name = "Utilify"
+identifier = "dev.utilify.app"
 description = "Menu-bar network and storage monitor"
 category = "Utility"
 copyright = "Copyright (c) 2026 Imran"
-before-packaging-command = "cargo build --release -p netwatch-app"
+before-packaging-command = "cargo build --release -p utilify-app"
 out-dir = "../../target/packages"
 binaries-dir = "../../target/release"
-binaries = [{ path = "netwatch", main = true }]
-icons = ["../../assets/icons/app/netwatch.png", "../../assets/icons/app/netwatch.icns"]
+binaries = [{ path = "utilify", main = true }]
+icons = ["../../assets/icons/app/utilify.png", "../../assets/icons/app/utilify.icns"]
 
 [package.metadata.packager.macos]
 minimum-system-version = "11.0"

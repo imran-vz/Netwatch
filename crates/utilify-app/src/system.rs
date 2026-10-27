@@ -1,5 +1,5 @@
 //! macOS glue for keep awake: the running apps a session can follow, and
-//! launching Netwatch at login.
+//! launching Utilify at login.
 
 /// A running app with a Dock presence, as offered in "While App Is Running".
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -8,7 +8,7 @@ pub struct RunningApp {
     pub name: String,
 }
 
-/// Regular (Dock) apps other than Netwatch, sorted by name.
+/// Regular (Dock) apps other than Utilify, sorted by name.
 #[cfg(target_os = "macos")]
 pub fn running_apps() -> Vec<RunningApp> {
     use objc2_app_kit::{NSApplicationActivationPolicy, NSWorkspace};
@@ -50,7 +50,7 @@ pub mod login {
         Some(unsafe { SMAppService::mainAppService() })
     }
 
-    /// Whether Netwatch is set to launch at login (`None`: unsupported).
+    /// Whether Utilify is set to launch at login (`None`: unsupported).
     pub fn enabled() -> Option<bool> {
         let s = service()?;
         // SAFETY: a plain getter.

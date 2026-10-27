@@ -5,8 +5,8 @@ use crate::theme::{MONO_FONT, UI_FONT};
 use gpui_kit::component::{h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
-use netwatch_core::history::RatePoint;
-use netwatch_core::settings::StorageLevel;
+use utilify_core::history::RatePoint;
+use utilify_core::settings::StorageLevel;
 
 pub mod color {
     use gpui_kit::{Hsla, rgb};
@@ -93,7 +93,7 @@ pub fn px(design: f32) -> Pixels {
 }
 
 /// Card width; the window adds [`SHADOW`] around it.
-pub const CARD_W: f32 = 400.;
+pub const CARD_W: f32 = 440.;
 /// Transparent margin around the card for its shadow.
 pub const SHADOW: f32 = 16.;
 /// Width of the content inside the panel: card − panel inset − padding.
@@ -252,15 +252,23 @@ pub fn segmented(segments: Vec<Stateful<Div>>, on: usize) -> Div {
     for (i, seg) in segments.into_iter().enumerate() {
         let selected = i == on;
         row = row.child(
-            seg.flex_1()
+            // Many short labels: size each to its text (plus an equal share
+            // of what's left), so long ones like `Overview` aren't squeezed
+            // while `Fans` floats in space. A few: equal widths.
+            seg.when(count >= 5, |s| s.flex_auto().px(px(4.)))
+                .when(count < 5, |s| s.flex_1())
                 .h_full()
                 .flex()
                 .items_center()
                 .justify_center()
                 .rounded(px(9.))
                 .border_1()
-                // Five tabs only fit at a smaller size.
-                .text_size(px(if count > 4 { 13.5 } else { 15. }))
+                // Five or six tabs only fit at a smaller size.
+                .text_size(px(match count {
+                    0..=4 => 15.,
+                    5 => 13.5,
+                    _ => 12.5,
+                }))
                 .cursor_pointer()
                 .when(selected, |s| {
                     s.bg(raised())
@@ -442,17 +450,36 @@ pub fn zone_bar(yellow_from: f64, red_from: f64, used: f64) -> Div {
         )
 }
 
+/// Height of [`stepper`].
+pub const STEPPER_H: f32 = 47.;
+/// Height of [`small_button`], and of a [`stepper_sized`] that sits beside one.
+pub const SMALL_H: f32 = 36.;
+
 /// `−  50%  +`: a value with buttons either side.
 pub fn stepper(
-    id: &'static str,
+    id: impl Into<SharedString>,
     value: impl Into<SharedString>,
     minus: Option<impl Fn(&ClickEvent, &mut Window, &mut App) + 'static>,
     plus: Option<impl Fn(&ClickEvent, &mut Window, &mut App) + 'static>,
 ) -> Div {
+    stepper_sized(id, value, minus, plus, STEPPER_H)
+}
+
+/// A [`stepper`] `height` tall, for rows where it sits beside other controls.
+pub fn stepper_sized(
+    id: impl Into<SharedString>,
+    value: impl Into<SharedString>,
+    minus: Option<impl Fn(&ClickEvent, &mut Window, &mut App) + 'static>,
+    plus: Option<impl Fn(&ClickEvent, &mut Window, &mut App) + 'static>,
+    height: f32,
+) -> Div {
+    let id: SharedString = id.into();
+    let inset = if height < STEPPER_H { 3. } else { 4. };
     let side = |suffix: &str, glyph: &str, enabled: bool| {
         div()
             .id(SharedString::from(format!("{id}-{suffix}")))
-            .size(px(37.))
+            .flex_none()
+            .size(px(height - 2. * inset - 2.))
             .flex()
             .items_center()
             .justify_center()
@@ -476,15 +503,24 @@ pub fn stepper(
     }
     h_flex()
         .flex_1()
-        .h(px(47.))
-        .p(px(4.))
+        .h(px(height))
+        .p(px(inset))
+        .gap(px(6.))
         .justify_between()
-        .rounded(px(12.))
+        .rounded(px(if height < STEPPER_H { 10. } else { 12. }))
         .bg(control())
         .border_1()
         .border_color(rgb(0x252525))
         .child(minus_btn)
-        .child(mono(16., fg()).child(value.into()))
+        .child(
+            mono(if height < STEPPER_H { 15. } else { 16. }, fg())
+                .flex_1()
+                .min_w_0()
+                .flex()
+                .justify_center()
+                .whitespace_nowrap()
+                .child(value.into()),
+        )
         .child(plus_btn)
 }
 
@@ -531,6 +567,34 @@ pub fn kv(label: impl Into<SharedString>, value: impl IntoElement) -> Div {
         .text_size(px(14.5))
         .child(div().text_color(fg2()).child(label.into()))
         .child(h_flex().gap(px(4.)).text_color(fg()).child(value))
+}
+
+/// `SESSION OPTIONS`: a small heading over a group of rows.
+pub fn section_label(label: &str) -> Div {
+    ui_text(13., fg3()).child(label.to_uppercase())
+}
+
+/// A compact bordered text button: `Start`, `Save`.
+pub fn small_button(id: impl Into<ElementId>, label: &str, enabled: bool) -> Stateful<Div> {
+    div()
+        .id(id)
+        .flex_none()
+        .h(px(SMALL_H))
+        .min_w(px(64.))
+        .px(px(14.))
+        .flex()
+        .items_center()
+        .justify_center()
+        .rounded(px(9.))
+        .border_1()
+        .border_color(card_border())
+        .bg(rgb(0x141414))
+        .text_size(px(14.5))
+        .text_color(if enabled { fg() } else { fg4() })
+        .when(enabled, |b| {
+            b.cursor_pointer().hover(|s| s.bg(rgb(0x1f1f1f)))
+        })
+        .child(label.to_string())
 }
 
 pub fn separator() -> Div {

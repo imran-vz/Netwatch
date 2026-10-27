@@ -47,7 +47,7 @@ pub fn fonts() -> Vec<Cow<'static, [u8]>> {
 
 /// The monospace font the menu-bar icon renders its rate text with.
 pub fn icon_font() -> Vec<u8> {
-    Embedded::get("fonts/lilex/Lilex-Regular.ttf")
+    Embedded::get("fonts/lilex/Lilex-SemiBold.ttf")
         .map(|f| f.data.into_owned())
         .unwrap_or_default()
 }
