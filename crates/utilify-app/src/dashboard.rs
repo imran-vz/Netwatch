@@ -512,8 +512,13 @@ impl Dashboard {
             ),
         };
         let dot = if link.is_some() { ok() } else { danger() };
+        let tile = if self.tab == Tab::Overview {
+            ui::header_logo(dot)
+        } else {
+            ui::header_icon(icon, dot)
+        };
         ui::header(
-            ui::icon_button("tab-icon", ui::header_icon(icon, dot)),
+            ui::icon_button("tab-icon", tile),
             title,
             ui::dotted(subtitle),
             chip,

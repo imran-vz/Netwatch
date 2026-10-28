@@ -343,6 +343,36 @@ pub fn header_icon(name: &str, dot: Hsla) -> Div {
         )
 }
 
+/// The Utilify logo, `size` design px tall, in the variant for the current
+/// appearance.
+pub fn logo(size: f32) -> Img {
+    let path = if color::is_light() {
+        "brand/utilify-mark-on-light.svg"
+    } else {
+        "brand/utilify-mark.svg"
+    };
+    // The mark is 520 x 546.
+    img(path).h(px(size)).w(px(size * 520. / 546.))
+}
+
+/// The logo with the small status dot at its lower right, for the header.
+pub fn header_logo(dot: Hsla) -> Div {
+    div()
+        .relative()
+        .child(logo(21.))
+        .child(
+            div()
+                .absolute()
+                .right(px(-4.))
+                .bottom(px(-3.))
+                .size(px(8.))
+                .rounded_full()
+                .bg(dot)
+                .border_1()
+                .border_color(raised()),
+        )
+}
+
 /// The outer card: header and tab bar on the card surface, then the inset
 /// panel with the tab's content.
 pub fn card(header: impl IntoElement, tabs: impl IntoElement, panel_body: impl IntoElement) -> Div {

@@ -1,4 +1,4 @@
-//! Embedded assets: fonts and theme, plus gpui-kit's Lucide icon set.
+//! Embedded assets: fonts, theme and the logo, plus gpui-kit's Lucide icon set.
 
 use gpui_kit::{AssetSource, Result, SharedString};
 use std::borrow::Cow;
@@ -7,6 +7,7 @@ use std::borrow::Cow;
 #[folder = "../../assets"]
 #[include = "fonts/**/*.ttf"]
 #[include = "themes/*.json"]
+#[include = "brand/*.svg"]
 pub struct Embedded;
 
 /// App assets first, then gpui-kit's full Lucide catalog.
