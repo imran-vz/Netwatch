@@ -25,7 +25,6 @@ pub fn run() {
         utilify_core::PRODUCT_NAME,
         env!("CARGO_PKG_VERSION")
     );
-    utilify_core::migrate_legacy_data();
     let settings_path = utilify_core::settings::default_path();
     let settings = settings_path
         .as_deref()
@@ -42,7 +41,9 @@ pub fn run() {
             cx.set_activation_policy(ActivationPolicy::Accessory);
             gpui_kit::init(cx);
             theme::init(cx);
+            dashboard::init(cx);
             workbench::init(cx);
+            cx.on_system_notification_response(handle_notification);
 
             let stats = cx.new(|cx| {
                 let mut s = Stats::new(settings.clone(), settings_path);
@@ -53,6 +54,10 @@ pub fn run() {
             let on_quit = stats.clone();
             cx.on_app_quit(move |cx| {
                 on_quit.update(cx, |s, _| s.shutdown());
+                // Warnings about the fans or the session no longer apply.
+                for tag in Stats::alert_tags() {
+                    cx.dismiss_system_notification(tag);
+                }
                 async {}
             })
             .detach();
@@ -101,6 +106,7 @@ pub fn run() {
                     dashboard::set_tab(tab, cx);
                 }
                 if std::env::var_os("UTILIFY_DEV_SPEED_TEST").is_some() {
+                    dashboard::unfold_speed_test(cx);
                     stats.update(cx, |s, cx| s.start_speed_test(cx));
                 }
                 if std::env::var_os("UTILIFY_DEV_AWAKE").is_some() {
@@ -123,6 +129,66 @@ pub fn run() {
                 cx,
             );
         });
+}
+
+/// A click on one of our notifications, or one of its buttons: do what the
+/// button says, or show the tab it's about.
+fn handle_notification(response: SystemNotificationResponse, cx: &mut App) {
+    use utilify_core::alerts::{self as a, AlertKind};
+    let kind = AlertKind::from_tag(&response.tag);
+    log::info!(
+        "Notification {} answered with {:?}",
+        response.tag,
+        response.action_id
+    );
+    match response.action_id.as_deref() {
+        Some(a::ACTION_FANS_AUTO) => {
+            update_fan_settings(cx, |s, _| s.active = utilify_core::fans::Active::Automatic)
+        }
+        Some(a::ACTION_SNOOZE_1H) => {
+            if let Some(kind) = kind {
+                stats::stats(cx).update(cx, |s, _| s.alerts.snooze(kind, std::time::Instant::now()));
+            }
+        }
+        Some(a::ACTION_AWAKE_END) => stop_keep_awake(cx),
+        Some(a::ACTION_AWAKE_EXTEND) => {
+            let now = std::time::Instant::now();
+            let left = stats::stats(cx)
+                .read(cx)
+                .keep_awake
+                .session()
+                .and_then(|s| s.remaining(now))
+                .unwrap_or_default();
+            let more = left + std::time::Duration::from_secs(30 * 60);
+            start_keep_awake(cx, Mode::For(more), Activation::Manual);
+        }
+        Some(a::ACTION_OPEN_FANS) => dashboard::open_on(dashboard::Tab::Fans, cx),
+        _ => dashboard::open_on(tab_for_notification(kind, &response.tag), cx),
+    }
+}
+
+/// The tab a notification is about: by its [`AlertKind`], or for the two
+/// the app posts itself, by tag.
+fn tab_for_notification(kind: Option<utilify_core::alerts::AlertKind>, tag: &str) -> dashboard::Tab {
+    use dashboard::Tab;
+    use utilify_core::alerts::AlertKind as K;
+    match kind {
+        Some(
+            K::FansHighOnBattery
+            | K::ThermalPressure
+            | K::FanOverheat
+            | K::FanHelperLost
+            | K::ForeignFanControl,
+        ) => Tab::Fans,
+        Some(K::LowBatteryAwake | K::LidSleepOnBattery | K::AwakeEndingSoon) => Tab::Awake,
+        Some(K::NetworkOffline) => Tab::Network,
+        Some(K::StorageRed) => Tab::Storage,
+        None => match tag {
+            "awake-ended" => Tab::Awake,
+            "speed-test" => Tab::Network,
+            _ => Tab::Overview,
+        },
+    }
 }
 
 fn spawn_tray_events(rx: smol::channel::Receiver<TrayEvent>, cx: &mut App) {
@@ -225,9 +291,29 @@ pub fn stop_keep_awake(cx: &mut App) {
 /// Flip launch at login. The system holds the state, not our settings.
 pub fn toggle_launch_at_login(cx: &mut App) {
     let on = !system::login::enabled().unwrap_or(false);
-    if let Err(e) = system::login::set(on) {
-        log::warn!("Changing launch at login failed: {e}");
-    }
+    let result = system::login::set(on);
+    stats::stats(cx).update(cx, |s, cx| {
+        match &result {
+            Ok(()) => s.clear_problem("login-item"),
+            Err(e) => {
+                log::warn!("Changing launch at login failed: {e}");
+                s.set_problem(stats::Problem {
+                    id: "login-item",
+                    status: utilify_core::health::Health::Warn,
+                    title: format!(
+                        "Couldn't turn launch at login {}",
+                        if on { "on" } else { "off" }
+                    ),
+                    detail: format!(
+                        "{e}. Check System Settings › General › Login Items, where \
+                         Utilify may need to be allowed."
+                    ),
+                    dismissable: true,
+                });
+            }
+        }
+        cx.notify();
+    });
     tray::refresh_system();
     redraw_tray(cx);
 }

@@ -99,8 +99,8 @@ fn start(mode: Mode) -> impl Fn(&ClickEvent, &mut Window, &mut App) + 'static {
 
 fn status_text(s: &Snapshot) -> AnyElement {
     match &s.status {
-        Some(status) => ui::mono(15., ok()).child(status.clone()).into_any_element(),
-        None => ui::ui_text(14.5, fg3()).child("off").into_any_element(),
+        Some(status) => ui::pill(status.clone(), ok()).into_any_element(),
+        None => ui::ui_text(ui::text::SMALL, fg3()).child("off").into_any_element(),
     }
 }
 
@@ -121,10 +121,16 @@ pub(super) fn overview_section(s: &super::Snapshot) -> Div {
                 Some(m) => seg.on_click(start(m)),
             };
             match mode {
-                None => seg.child("Off"),
-                Some(Mode::Indefinite) => seg.child("∞"),
-                Some(Mode::For(d)) => seg.child(format::span(d.as_secs())),
-                Some(_) => seg.child(ui::icon("file-down", 15., fg2())),
+                None => seg.child("Off").tooltip(ui::tip("End the session", None)),
+                Some(Mode::Indefinite) => seg
+                    .child("∞")
+                    .tooltip(ui::tip("Indefinitely", Some("⌘I in the menu"))),
+                Some(Mode::For(d)) => seg
+                    .child(format::span(d.as_secs()))
+                    .tooltip(ui::tip(format!("For {}", format::span_long(d.as_secs())), None)),
+                Some(_) => seg
+                    .child(ui::icon("file-down", 15., fg2()))
+                    .tooltip(ui::tip("While a file downloads", None)),
             }
         })
         .collect();
@@ -139,8 +145,14 @@ pub(super) fn overview_section(s: &super::Snapshot) -> Div {
         "display stays on"
     };
     v_flex()
-        .gap(px(12.))
-        .child(ui::label_row("Keep awake", status_text(a)))
+        .gap(px(10.))
+        .child(
+            h_flex()
+                .justify_between()
+                .items_center()
+                .child(ui::section_label("Keep awake"))
+                .child(status_text(a)),
+        )
         .child(ui::segmented(segments, on))
         .child(ui::caption(
             div().text_color(fg3()).child(kept_awake(a)),
@@ -183,8 +195,8 @@ fn row(title: &str, detail: Option<String>, control: impl IntoElement) -> Div {
                 .flex_1()
                 .min_w_0()
                 .gap(px(2.))
-                .child(ui::ui_text(15.5, fg()).child(title.to_string()))
-                .children(detail.map(|d| ui::ui_text(13.5, fg3()).child(d))),
+                .child(ui::ui_text(ui::text::BODY, fg()).child(title.to_string()))
+                .children(detail.map(|d| ui::ui_text(ui::text::CAPTION, fg3()).child(d))),
         )
         .child(control)
 }
@@ -210,9 +222,19 @@ pub(super) fn tab(s: &super::Snapshot, cx: &mut App) -> Div {
     let set = s.settings.clone();
 
     let session = {
-        let mut v = v_flex()
-            .gap(px(10.))
-            .child(ui::label_row("Current session", status_text(a)));
+        let mut v = v_flex().gap(px(10.)).child(
+            h_flex()
+                .justify_between()
+                .items_center()
+                .child(ui::section_label("Current session"))
+                .child(status_text(a)),
+        );
+        if a.session.is_none() {
+            v = v.child(
+                ui::ui_text(ui::text::SMALL, fg3())
+                    .child("No session. Your Mac sleeps as it normally would."),
+            );
+        }
         if let Some(session) = &a.session {
             let running = format::span_long(session.started.elapsed().as_secs());
             v = v.child(row(
@@ -249,7 +271,7 @@ pub(super) fn tab(s: &super::Snapshot, cx: &mut App) -> Div {
             h_flex()
                 .justify_between()
                 .child(ui::section_label("Start new session"))
-                .child(ui::ui_text(13., fg4()).child("while an app runs: in the menu")),
+                .child(ui::ui_text(ui::text::MICRO, fg3()).child("while an app runs: in the menu")),
         )
         .child(row(
             "Indefinitely",
@@ -322,7 +344,11 @@ pub(super) fn tab(s: &super::Snapshot, cx: &mut App) -> Div {
         .child(toggle_row(
             "awake-allow-closed",
             "Allow sleep with the lid closed",
-            Some("Blocking it only works on AC power".into()),
+            Some(if s.power.on_battery && !set.awake_allow_closed_display_sleep {
+                "On battery now: macOS sleeps on lid close until you plug in".into()
+            } else {
+                "Blocking it only works on AC power".into()
+            }),
             set.awake_allow_closed_display_sleep,
             true,
             |s| s.awake_allow_closed_display_sleep = !s.awake_allow_closed_display_sleep,

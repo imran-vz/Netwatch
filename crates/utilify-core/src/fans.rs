@@ -337,18 +337,10 @@ pub fn default_path() -> Option<PathBuf> {
 }
 
 /// Load fan settings; a missing or unreadable file gives the defaults
-/// (every fan automatic).
+/// (every fan automatic). One that doesn't parse is moved aside first
+/// ([`crate::quarantine`]).
 pub fn load(path: &Path) -> FanSettings {
-    let mut s: FanSettings = match std::fs::read(path) {
-        Ok(bytes) => serde_json::from_slice(&bytes).unwrap_or_else(|e| {
-            log::warn!(
-                "Ignoring unreadable fan settings at {}: {e}",
-                path.display()
-            );
-            FanSettings::default()
-        }),
-        Err(_) => FanSettings::default(),
-    };
+    let mut s: FanSettings = crate::load_json(path, "fan settings").unwrap_or_default();
     sanitize(&mut s);
     s
 }
@@ -584,6 +576,9 @@ mod tests {
         assert_eq!(s.presets.len(), 1);
         std::fs::write(&path, "not json").unwrap();
         assert_eq!(load(&path), FanSettings::default());
+        assert!(!path.exists());
+        let aside = crate::settings::tests::only_corrupt_copy(path.parent().unwrap());
+        assert_eq!(std::fs::read_to_string(aside).unwrap(), "not json");
     }
 
     #[test]

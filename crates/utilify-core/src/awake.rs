@@ -531,8 +531,9 @@ pub fn downloads_in_progress(dir: &Path) -> bool {
     })
 }
 
+/// What `awake.json` holds.
 #[derive(Debug, Default, Serialize, Deserialize)]
-struct Stored {
+pub(crate) struct Stored {
     total_secs: u64,
 }
 
@@ -544,12 +545,10 @@ pub fn default_path() -> Option<PathBuf> {
     )
 }
 
-/// The stored total; missing or unreadable gives zero.
+/// The stored total; missing or unreadable gives zero. A file that doesn't
+/// parse is moved aside first ([`crate::quarantine`]).
 pub fn load_total(path: &Path) -> Duration {
-    let stored: Stored = std::fs::read(path)
-        .ok()
-        .and_then(|b| serde_json::from_slice(&b).ok())
-        .unwrap_or_default();
+    let stored: Stored = crate::load_json(path, "keep-awake total").unwrap_or_default();
     Duration::from_secs(stored.total_secs)
 }
 
@@ -805,5 +804,8 @@ mod tests {
         assert_eq!(load_total(&path), Duration::from_secs(1234));
         std::fs::write(&path, "junk").unwrap();
         assert_eq!(load_total(&path), Duration::ZERO);
+        assert!(!path.exists());
+        let aside = crate::settings::tests::only_corrupt_copy(path.parent().unwrap());
+        assert_eq!(std::fs::read_to_string(aside).unwrap(), "junk");
     }
 }

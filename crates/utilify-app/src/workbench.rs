@@ -13,9 +13,9 @@ mod widgets;
 
 use crate::theme::UI_FONT;
 use crate::ui::{
-    self,
+    self, R_MD, Tone,
     color::{self, *},
-    px,
+    px, radius, text,
 };
 use gpui_kit::component::input::{
     Copy, Cut, InputState, Paste, Redo, SelectAll, TextareaState, Undo,
@@ -31,7 +31,10 @@ use utilify_chef::{Dish, Operation, Recipe};
 
 use recipe::StepView;
 
-actions!(workbench, [Bake, CloseWorkbench, QuitApp]);
+actions!(
+    workbench,
+    [Bake, CloseWorkbench, QuitApp, FocusSearch, OpenFile]
+);
 
 const KEY_CONTEXT: &str = "Workbench";
 /// Pause after an edit before auto bake runs, so typing doesn't bake on
@@ -40,12 +43,17 @@ const BAKE_DELAY: Duration = Duration::from_millis(120);
 const SAVE_DELAY: Duration = Duration::from_secs(1);
 /// The output pane shows at most this much; Copy and Save take all of it.
 const MAX_SHOWN: usize = 1024 * 1024;
+/// Panel widths at design scale; input and output take the rest.
+const OPERATIONS_W: f32 = 310.;
+const RECIPE_W: f32 = 440.;
 
 pub fn init(cx: &mut App) {
     cx.bind_keys([
         KeyBinding::new("cmd-enter", Bake, Some(KEY_CONTEXT)),
         KeyBinding::new("cmd-w", CloseWorkbench, Some(KEY_CONTEXT)),
         KeyBinding::new("cmd-q", QuitApp, Some(KEY_CONTEXT)),
+        KeyBinding::new("cmd-f", FocusSearch, Some(KEY_CONTEXT)),
+        KeyBinding::new("cmd-o", OpenFile, Some(KEY_CONTEXT)),
     ]);
     cx.on_action(|_: &QuitApp, cx| cx.quit());
 }
@@ -56,6 +64,20 @@ pub fn init(cx: &mut App) {
 struct InputFile {
     name: SharedString,
     bytes: std::sync::Arc<Vec<u8>>,
+}
+
+/// A short message for the user. Confirmations (ok, info) show briefly in
+/// the header; problems (caution, danger) show as a toast until dismissed
+/// or for a while.
+struct Notice {
+    tone: Tone,
+    text: SharedString,
+}
+
+impl Notice {
+    fn is_problem(&self) -> bool {
+        matches!(self.tone, Tone::Caution | Tone::Danger)
+    }
 }
 
 /// The last bake, as the output pane shows it.
@@ -81,6 +103,8 @@ pub struct Workbench {
 
     steps: Vec<StepView>,
     next_step_id: u64,
+    /// The recipe's step list, to scroll a failing step into view.
+    recipe_scroll: ScrollHandle,
     /// The dropdown that's open: a step's id and the argument's index.
     menu: Option<(u64, usize)>,
 
@@ -92,8 +116,8 @@ pub struct Workbench {
     /// Bumped by every bake request; only the latest one's result is shown.
     generation: u64,
     save_task: Option<Task<()>>,
-    /// A short confirmation in the header, like "Recipe copied".
-    notice: Option<SharedString>,
+    /// "Recipe copied", or "Couldn't open notes.txt: …".
+    notice: Option<Notice>,
     notice_task: Option<Task<()>>,
     _subscriptions: Vec<Subscription>,
 }
@@ -133,6 +157,11 @@ impl Workbench {
                 }
                 _ => {}
             }),
+            // The palette follows the OS appearance while the window is open.
+            cx.observe_window_appearance(window, |_, _, cx| {
+                crate::theme::follow_system(cx);
+                cx.notify();
+            }),
             cx.on_release(|this, cx| {
                 this.store_session(cx);
                 if let Some(path) = &this.session_path
@@ -156,6 +185,7 @@ impl Workbench {
             hovered: None,
             steps: vec![],
             next_step_id: 0,
+            recipe_scroll: ScrollHandle::new(),
             menu: None,
             input,
             input_file: None,
@@ -172,6 +202,16 @@ impl Workbench {
             this.push_step(step, None, window, cx);
         }
         this.bake(None, window, cx);
+        if let Some(moved) = session::take_recovered_files().first() {
+            this.notify_user(
+                Tone::Caution,
+                format!(
+                    "The saved workbench couldn't be read, so it starts empty. The old file was moved to {}",
+                    moved.display()
+                ),
+                cx,
+            );
+        }
         this
     }
 
@@ -341,16 +381,71 @@ impl Workbench {
         }));
     }
 
-    fn notify_user(&mut self, text: impl Into<SharedString>, cx: &mut Context<Self>) {
-        self.notice = Some(text.into());
+    /// Tell the user something, in `tone`'s colour and icon. Problems stay
+    /// up longer than confirmations.
+    fn notify_user(&mut self, tone: Tone, text: impl Into<SharedString>, cx: &mut Context<Self>) {
+        let notice = Notice {
+            tone,
+            text: text.into(),
+        };
+        let shown_for = Duration::from_secs(if notice.is_problem() { 8 } else { 2 });
+        self.notice = Some(notice);
         self.notice_task = Some(cx.spawn(async move |this, cx| {
-            cx.background_executor().timer(Duration::from_secs(2)).await;
+            cx.background_executor().timer(shown_for).await;
             let _ = this.update(cx, |t, cx| {
                 t.notice = None;
                 cx.notify();
             });
         }));
         cx.notify();
+    }
+
+    fn dismiss_notice(&mut self, cx: &mut Context<Self>) {
+        self.notice = None;
+        self.notice_task = None;
+        cx.notify();
+    }
+
+    fn focus_search(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.search.update(cx, |s, cx| s.focus(window, cx));
+    }
+
+    /// A confirmation, in the header's empty middle.
+    fn header_notice(&self) -> Option<Div> {
+        let n = self.notice.as_ref().filter(|n| !n.is_problem())?;
+        let color = n.tone.color();
+        Some(
+            h_flex()
+                .gap(px(7.))
+                .px(px(11.))
+                .py(px(5.))
+                .rounded(radius(R_MD))
+                .bg(color.opacity(0.1))
+                .border_1()
+                .border_color(color.opacity(0.3))
+                .child(ui::icon(n.tone.icon(), 14., color))
+                .child(ui::ui_text(text::SMALL, fg()).child(n.text.clone())),
+        )
+    }
+
+    /// A problem, floating over the bottom of the window until dismissed.
+    fn problem_toast(&self, cx: &mut Context<Self>) -> Option<Div> {
+        let n = self.notice.as_ref().filter(|n| n.is_problem())?;
+        let dismiss = widgets::tool_button("dismiss-notice", "x", fg2(), "Dismiss", true)
+            .on_click(cx.listener(|this, _, _, cx| this.dismiss_notice(cx)));
+        Some(
+            h_flex()
+                .absolute()
+                .left_0()
+                .right_0()
+                .bottom(px(24.))
+                .justify_center()
+                .child(
+                    ui::toast(n.tone, n.text.clone(), Some(dismiss))
+                        .max_w(px(640.))
+                        .border_color(n.tone.color().opacity(0.45)),
+                ),
+        )
     }
 
     fn header(&self, cx: &mut Context<Self>) -> Div {
@@ -368,12 +463,12 @@ impl Workbench {
         ]);
         h_flex()
             .flex_none()
-            .h(px(84.))
-            // Clear the traffic lights.
-            .pl(px(124.))
+            .h(px(76.))
+            // Clear the traffic lights (real pixels: they don't scale).
+            .pl(gpui_kit::px(92.))
             // Line Bake up with the panels' right edge.
             .pr(px(10.))
-            .gap(px(15.))
+            .gap(px(14.))
             .child(ui::icon_button(
                 "workbench-icon",
                 ui::icon("chef-hat", 19., fg()),
@@ -381,31 +476,25 @@ impl Workbench {
             .child(
                 v_flex()
                     .flex_none()
-                    .gap(px(3.))
+                    .gap(px(2.))
                     .child(
-                        ui::ui_text(17.5, fg())
-                            .font_weight(FontWeight::MEDIUM)
+                        ui::ui_text(text::TITLE, fg())
+                            .font_weight(FontWeight::SEMIBOLD)
                             .child("Workbench"),
                     )
-                    .child(ui::ui_text(14.5, fg2()).child(subtitle)),
+                    .child(ui::ui_text(text::SMALL, fg2()).child(subtitle)),
             )
             // Empty header space moves the window, as a title bar would.
             .child(
                 div()
                     .id("drag-area")
                     .flex_1()
+                    .min_w_0()
                     .h_full()
                     .flex()
                     .items_center()
                     .justify_center()
-                    .children(self.notice.clone().map(|n| {
-                        ui::ui_text(14., ok())
-                            .px(px(12.))
-                            .py(px(6.))
-                            .rounded(px(8.))
-                            .bg(ok().opacity(0.1))
-                            .child(n)
-                    }))
+                    .children(self.header_notice())
                     .on_mouse_down(MouseButton::Left, |e, window, _| {
                         if e.click_count == 2 {
                             window.titlebar_double_click();
@@ -417,16 +506,26 @@ impl Workbench {
             .child(
                 h_flex()
                     .id("auto-bake")
+                    .flex_none()
+                    .h(px(36.))
+                    .px(px(8.))
                     .gap(px(10.))
+                    .rounded(radius(R_MD))
                     .cursor_pointer()
-                    .child(ui::ui_text(14.5, fg2()).child("Auto bake"))
+                    .hover(|s| s.bg(widgets::hover_tint()))
+                    .active(|s| s.bg(widgets::press_tint()))
+                    .tooltip(ui::tip("Bake again after every change", None))
+                    .child(ui::ui_text(text::SMALL, fg2()).child("Auto bake"))
                     .child(ui::toggle("auto-bake-toggle", auto))
                     .on_click(cx.listener(|this, _, window, cx| this.toggle_auto_bake(window, cx))),
             )
             .child(
                 ui::button("bake", if self.baking { "Baking…" } else { "Bake" }, true)
                     .flex_none()
-                    .w(px(120.))
+                    .w(px(116.))
+                    .h(px(40.))
+                    .active(|s| s.bg(primary().opacity(0.8)))
+                    .tooltip(ui::tip("Bake", Some("⌘↩")))
                     .on_click(cx.listener(|this, _, window, cx| this.bake(None, window, cx))),
             )
     }
@@ -436,6 +535,7 @@ impl Render for Workbench {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         v_flex()
             .size_full()
+            .relative()
             .bg(color::card())
             .font_family(UI_FONT)
             .text_color(fg())
@@ -443,6 +543,10 @@ impl Render for Workbench {
             .track_focus(&self.focus)
             .on_action(cx.listener(|this, _: &Bake, window, cx| this.bake(None, window, cx)))
             .on_action(cx.listener(|_, _: &CloseWorkbench, window, _| window.remove_window()))
+            .on_action(
+                cx.listener(|this, _: &FocusSearch, window, cx| this.focus_search(window, cx)),
+            )
+            .on_action(cx.listener(|this, _: &OpenFile, window, cx| this.open_file(window, cx)))
             .child(self.header(cx))
             .child(
                 h_flex()
@@ -452,8 +556,12 @@ impl Render for Workbench {
                     .gap(px(10.))
                     .px(px(10.))
                     .pb(px(10.))
-                    .child(self.operations_panel(cx).w(px(330.)).flex_none())
-                    .child(self.recipe_panel(window, cx).w(px(470.)).flex_none())
+                    .child(
+                        self.operations_panel(window, cx)
+                            .w(px(OPERATIONS_W))
+                            .flex_none(),
+                    )
+                    .child(self.recipe_panel(window, cx).w(px(RECIPE_W)).flex_none())
                     .child(
                         v_flex()
                             .flex_1()
@@ -463,6 +571,7 @@ impl Render for Workbench {
                             .child(self.output_panel(cx).flex_1()),
                     ),
             )
+            .children(self.problem_toast(cx))
     }
 }
 
@@ -493,7 +602,7 @@ pub fn open(cx: &mut App) {
     let options = WindowOptions {
         window_bounds: Some(WindowBounds::Windowed(Bounds::centered(
             None,
-            size(gpui_kit::px(1360.), gpui_kit::px(860.)),
+            size(gpui_kit::px(1400.), gpui_kit::px(860.)),
             cx,
         ))),
         titlebar: Some(TitlebarOptions {
@@ -501,7 +610,8 @@ pub fn open(cx: &mut App) {
             appears_transparent: true,
             traffic_light_position: Some(point(gpui_kit::px(16.), gpui_kit::px(22.))),
         }),
-        window_min_size: Some(size(gpui_kit::px(1040.), gpui_kit::px(620.))),
+        // Fits the two fixed panels and a usable input/output column.
+        window_min_size: Some(size(gpui_kit::px(1100.), gpui_kit::px(660.))),
         focus: true,
         show: true,
         kind: WindowKind::Normal,
@@ -547,6 +657,11 @@ fn menus() -> Vec<Menu> {
             disabled: false,
         },
         Menu {
+            name: "File".into(),
+            items: vec![MenuItem::action("Open File…", OpenFile)],
+            disabled: false,
+        },
+        Menu {
             name: "Edit".into(),
             items: vec![
                 MenuItem::action("Undo", Undo),
@@ -561,7 +676,11 @@ fn menus() -> Vec<Menu> {
         },
         Menu {
             name: "Recipe".into(),
-            items: vec![MenuItem::action("Bake", Bake)],
+            items: vec![
+                MenuItem::action("Bake", Bake),
+                MenuItem::separator(),
+                MenuItem::action("Find Operation", FocusSearch),
+            ],
             disabled: false,
         },
     ]

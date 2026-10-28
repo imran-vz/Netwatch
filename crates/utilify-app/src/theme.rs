@@ -1,6 +1,6 @@
 //! Zed One Dark / One Light themes (shared with Guidy) and the UI fonts,
-//! following the OS appearance. The dashboard draws with its own dark palette
-//! ([`crate::ui`]).
+//! following the OS appearance. The dashboard and workbench draw with their
+//! own palette ([`crate::ui::color`]), which follows it too.
 
 use gpui_kit::component::{Theme, ThemeMode, ThemeRegistry};
 use gpui_kit::{App, Window, WindowAppearance};
@@ -41,9 +41,19 @@ pub fn mode_for(appearance: WindowAppearance) -> ThemeMode {
     }
 }
 
-/// Match the current OS appearance.
+/// Match the current OS appearance: gpui-kit's theme (text fields) and our
+/// own palette ([`crate::ui::color`]).
 pub fn follow_system(cx: &mut App) {
-    let mode = mode_for(cx.window_appearance());
+    let mut mode = mode_for(cx.window_appearance());
+    // Debug builds: UTILIFY_DEV_APPEARANCE=light|dark overrides the OS, for
+    // checking both palettes without changing the system setting.
+    #[cfg(debug_assertions)]
+    match std::env::var("UTILIFY_DEV_APPEARANCE").as_deref() {
+        Ok("light") => mode = ThemeMode::Light,
+        Ok("dark") => mode = ThemeMode::Dark,
+        _ => {}
+    }
+    crate::ui::color::set_light(mode == ThemeMode::Light);
     if Theme::global(cx).mode != mode {
         Theme::change(mode, None::<&mut Window>, cx);
     }

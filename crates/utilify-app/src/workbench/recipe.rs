@@ -5,8 +5,15 @@
 
 use super::Workbench;
 use super::operations::{DragLabel, DraggedOp};
-use super::widgets::{Choice, chip, dropdown, field_frame, panel, text_button, tool_button};
-use crate::ui::{self, color::*, px};
+use super::widgets::{
+    Choice, chip, drop_line, dropdown, field_frame, hover_tint, panel, press_tint, remove_button,
+    text_button, tool_button,
+};
+use crate::ui::{
+    self, R_MD, R_SM, Tone,
+    color::{self, *},
+    px, radius, text,
+};
 use gpui_kit::component::input::{Input, InputEvent, InputState, Textarea, TextareaState};
 use gpui_kit::component::{Sizable as _, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
@@ -202,6 +209,21 @@ impl Workbench {
         self.recipe_changed(window, cx);
     }
 
+    /// Scroll the `i`th step into view (the output's error banner uses it).
+    pub(super) fn show_step(&mut self, i: usize, cx: &mut Context<Self>) {
+        self.recipe_scroll.scroll_to_item(i);
+        cx.notify();
+    }
+
+    /// Disable the `i`th step, so the recipe bakes without it.
+    pub(super) fn disable_step(&mut self, i: usize, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(id) = self.steps.get(i).map(|s| s.id) {
+            self.update_step(id, window, cx, |s| s.disabled = true);
+            // Bake even with auto bake off, so the failure clears.
+            self.bake(None, window, cx);
+        }
+    }
+
     fn clear_recipe(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.steps.clear();
         self.recipe_changed(window, cx);
@@ -209,13 +231,14 @@ impl Workbench {
 
     fn copy_recipe(&mut self, cx: &mut Context<Self>) {
         cx.write_to_clipboard(ClipboardItem::new_string(self.recipe().to_chef()));
-        self.notify_user("Recipe copied", cx);
+        self.notify_user(Tone::Ok, "Recipe copied in chef format", cx);
     }
 
     /// Replace the recipe with one from the clipboard. A CyberChef URL's
     /// input comes along too.
     fn paste_recipe(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(text) = cx.read_from_clipboard().and_then(|c| c.text()) else {
+            self.notify_user(Tone::Caution, "The clipboard has no text to paste", cx);
             return;
         };
         match Recipe::parse(&text) {
@@ -227,37 +250,50 @@ impl Workbench {
                 if let Some(input) = utilify_chef::recipe::url_input(&text) {
                     self.set_input_bytes("URL input".into(), input, window, cx);
                 }
-                self.notify_user("Recipe pasted", cx);
+                self.notify_user(Tone::Ok, "Recipe pasted", cx);
                 self.recipe_changed(window, cx);
             }
-            Ok(_) => self.notify_user("The clipboard has no recipe", cx),
-            Err(e) => self.notify_user(e, cx),
+            Ok(_) => self.notify_user(
+                Tone::Caution,
+                "The clipboard has no recipe. Copy a CyberChef recipe, its chef format or URL first.",
+                cx,
+            ),
+            Err(e) => self.notify_user(Tone::Danger, format!("Couldn't read the recipe: {e}"), cx),
         }
     }
 
     pub(super) fn recipe_panel(&self, window: &mut Window, cx: &mut Context<Self>) -> Div {
         let n = self.steps.len();
         let caption = match n {
-            0 => "empty".to_string(),
+            0 => "no steps".to_string(),
             1 => "1 step".to_string(),
             n => format!("{n} steps"),
         };
         let actions = h_flex()
             .gap(px(6.))
             .child(
-                text_button("paste-recipe", "Paste")
+                text_button("paste-recipe", "Paste", true)
+                    .tooltip(ui::tip(
+                        "Paste a CyberChef recipe, chef format or URL",
+                        None,
+                    ))
                     .on_click(cx.listener(|this, _, window, cx| this.paste_recipe(window, cx))),
             )
-            .when(n > 0, |a| {
-                a.child(
-                    text_button("copy-recipe", "Copy")
-                        .on_click(cx.listener(|this, _, _, cx| this.copy_recipe(cx))),
-                )
-                .child(
-                    tool_button("clear-recipe", "trash", fg2())
-                        .on_click(cx.listener(|this, _, window, cx| this.clear_recipe(window, cx))),
-                )
-            });
+            .child(
+                text_button("copy-recipe", "Copy", n > 0)
+                    .tooltip(ui::tip("Copy the recipe in chef format", None))
+                    .when(n > 0, |b| {
+                        b.on_click(cx.listener(|this, _, _, cx| this.copy_recipe(cx)))
+                    }),
+            )
+            .child(
+                tool_button("clear-recipe", "trash", fg2(), "Clear recipe", n > 0).when(
+                    n > 0,
+                    |b| {
+                        b.on_click(cx.listener(|this, _, window, cx| this.clear_recipe(window, cx)))
+                    },
+                ),
+            );
         let halt = self.result.as_ref().and_then(|o| o.halt.clone());
         let cards: Vec<AnyElement> = (0..n)
             .map(|i| {
@@ -270,6 +306,7 @@ impl Workbench {
             .flex_1()
             .min_h_0()
             .overflow_y_scroll()
+            .track_scroll(&self.recipe_scroll)
             .p(px(12.))
             .gap(px(10.))
             .children(cards)
@@ -299,8 +336,9 @@ impl Workbench {
         } else if paused {
             caution()
         } else {
-            card_border()
+            control_border()
         };
+        let group = SharedString::from(format!("step-group-{id}"));
         let hidden: Vec<usize> = step
             .op
             .args
@@ -309,36 +347,61 @@ impl Workbench {
             .flat_map(|(spec, v)| spec.hidden_by(v).iter().copied())
             .collect();
 
+        let toggle_tint = |on: bool, color: Hsla| {
+            move |b: Stateful<Div>| b.when(on, |b| b.bg(color.opacity(0.12)))
+        };
         let header = h_flex()
             .gap(px(4.))
             .child(
                 div()
                     .id(SharedString::from(format!("grip-{id}")))
                     .flex_none()
+                    .h(px(28.))
+                    .w(px(18.))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .rounded(radius(R_SM))
                     .cursor_grab()
-                    .child(ui::icon("grip-vertical", 15., fg4()))
+                    .hover(|s| s.bg(hover_tint()))
+                    .tooltip(ui::tip("Drag to reorder", None))
+                    .child(ui::icon("grip-vertical", 15., fg3()))
                     .on_drag(DraggedStep(id), {
                         let name = step.op.name;
                         move |_, _, _, cx| cx.new(|_| DragLabel(name.into()))
                     }),
             )
             .child(
-                ui::ui_text(15., if step.disabled { fg3() } else { fg() })
+                ui::mono(text::MICRO, if failed { danger() } else { fg3() })
+                    .flex_none()
+                    .min_w(px(18.))
+                    .child((i + 1).to_string()),
+            )
+            .child(
+                ui::ui_text(text::BODY, if step.disabled { fg3() } else { fg() })
                     .flex_1()
                     .min_w_0()
-                    .pl(px(4.))
                     .font_weight(FontWeight::MEDIUM)
                     .overflow_hidden()
                     .whitespace_nowrap()
                     .child(step.op.name),
             )
             .when(paused, |h| h.child(chip("paused", caution())))
+            .when(failed, |h| h.child(chip("failed", danger())))
+            .when(step.disabled, |h| h.child(chip("off", fg3())))
             .child(
                 tool_button(
                     SharedString::from(format!("bp-{id}")),
                     "circle-pause",
-                    if step.breakpoint { caution() } else { fg4() },
+                    if step.breakpoint { caution() } else { fg3() },
+                    if step.breakpoint {
+                        "Remove breakpoint"
+                    } else {
+                        "Pause before this step"
+                    },
+                    true,
                 )
+                .map(toggle_tint(step.breakpoint, caution()))
                 .on_click(cx.listener(move |this, _, window, cx| {
                     this.update_step(id, window, cx, |s| s.breakpoint = !s.breakpoint);
                 })),
@@ -347,14 +410,21 @@ impl Workbench {
                 tool_button(
                     SharedString::from(format!("off-{id}")),
                     if step.disabled { "eye-off" } else { "eye" },
-                    if step.disabled { caution() } else { fg4() },
+                    if step.disabled { caution() } else { fg3() },
+                    if step.disabled {
+                        "Enable step"
+                    } else {
+                        "Disable step"
+                    },
+                    true,
                 )
+                .map(toggle_tint(step.disabled, caution()))
                 .on_click(cx.listener(move |this, _, window, cx| {
                     this.update_step(id, window, cx, |s| s.disabled = !s.disabled);
                 })),
             )
             .child(
-                tool_button(SharedString::from(format!("rm-{id}")), "x", fg3()).on_click(
+                remove_button(SharedString::from(format!("rm-{id}")), "Remove step").on_click(
                     cx.listener(move |this, _, window, cx| this.remove_step(id, window, cx)),
                 ),
             );
@@ -378,12 +448,17 @@ impl Workbench {
                     h_flex()
                         .id(SharedString::from(format!("flag-{id}-{a}")))
                         .gap(px(9.))
+                        .py(px(3.))
+                        .pr(px(6.))
+                        .rounded(radius(R_SM))
                         .cursor_pointer()
+                        .hover(|s| s.bg(hover_tint()))
+                        .active(|s| s.bg(press_tint()))
                         .child(ui::toggle(
                             SharedString::from(format!("flag-t-{id}-{a}")),
                             on,
                         ))
-                        .child(ui::ui_text(14., fg2()).child(spec.name))
+                        .child(ui::ui_text(text::SMALL, fg2()).child(spec.name))
                         .on_click(cx.listener(move |this, _, window, cx| {
                             this.set_arg(id, a, ArgValue::Bool(!on), window, cx);
                         })),
@@ -392,7 +467,7 @@ impl Workbench {
                 wide = wide.child(
                     v_flex()
                         .gap(px(6.))
-                        .child(ui::ui_text(13., fg3()).child(spec.name))
+                        .child(ui::ui_text(text::CAPTION, fg2()).child(spec.name))
                         .child(self.arg_control(i, a, window, cx)),
                 );
             }
@@ -400,16 +475,21 @@ impl Workbench {
 
         v_flex()
             .id(SharedString::from(format!("step-{id}")))
+            .group(group.clone())
+            .relative()
             .flex_none()
             .p(px(12.))
             .gap(px(10.))
-            .rounded(px(12.))
-            .bg(rgb(0x151515))
+            .rounded(radius(R_MD))
+            .bg(color::card())
             .border_1()
             .border_color(border)
-            .when(step.disabled, |c| c.opacity(0.55))
+            .when(failed, |c| c.bg(danger().opacity(0.05)))
+            .when(step.disabled, |c| c.opacity(0.6))
             .drag_over::<DraggedOp>(|s, _, _, _| s.border_color(focus()))
             .drag_over::<DraggedStep>(|s, _, _, _| s.border_color(focus()))
+            // Dropping here inserts above this step: show where.
+            .child(drop_line::<DraggedOp, DraggedStep>(group))
             .on_drop(cx.listener(move |this, d: &DraggedOp, window, cx| {
                 cx.stop_propagation();
                 let at = this.index_of(id);
@@ -420,7 +500,22 @@ impl Workbench {
                 this.move_step(d.0, Some(id), window, cx);
             }))
             .child(header)
-            .children(error.map(|e| ui::ui_text(13.5, danger()).child(e)))
+            .children(error.map(|e| {
+                h_flex()
+                    .items_start()
+                    .gap(px(7.))
+                    .child(
+                        div()
+                            .pt(px(2.))
+                            .child(ui::icon(Tone::Danger.icon(), 14., danger())),
+                    )
+                    .child(
+                        ui::ui_text(text::CAPTION, danger())
+                            .flex_1()
+                            .min_w_0()
+                            .child(e),
+                    )
+            }))
             .when(!step.op.args.is_empty(), |c| c.child(wide))
             .when(has_flags, |c| c.child(flags))
     }
@@ -430,7 +525,7 @@ impl Workbench {
         &self,
         i: usize,
         a: usize,
-        _window: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let view = &self.steps[i];
@@ -459,16 +554,23 @@ impl Workbench {
         };
         let field = |fields: &[Option<Field>]| -> AnyElement {
             match &fields[a] {
-                Some(Field::Line(s)) => field_frame(false)
-                    .child(Input::new(s).appearance(false).small().text_size(px(14.5)))
+                Some(Field::Line(s)) => field_frame(s.read(cx).focus_handle(cx).is_focused(window))
+                    .bg(color::panel())
+                    .child(
+                        Input::new(s)
+                            .appearance(false)
+                            .small()
+                            .text_size(px(text::SMALL)),
+                    )
                     .into_any_element(),
-                Some(Field::Area(s)) => field_frame(false)
+                Some(Field::Area(s)) => field_frame(s.read(cx).focus_handle(cx).is_focused(window))
+                    .bg(color::panel())
                     .py(px(4.))
                     .child(
                         Textarea::new(s)
                             .appearance(false)
                             .small()
-                            .text_size(px(14.5)),
+                            .text_size(px(text::SMALL)),
                     )
                     .into_any_element(),
                 None => div().into_any_element(),
@@ -574,24 +676,36 @@ impl Workbench {
 
 /// The dashed target under the steps; fills the panel when it's empty.
 fn drop_zone(empty: bool) -> Div {
-    div()
+    let zone = div()
         .flex_none()
-        .when(empty, |d| d.flex_1().min_h(px(200.)))
-        .when(!empty, |d| d.h(px(64.)))
         .flex()
         .items_center()
         .justify_center()
-        .rounded(px(12.))
+        .rounded(radius(R_MD))
         .border_1()
         .border_dashed()
-        .border_color(rgb(0x2a2a2a))
-        .text_size(px(14.))
-        .text_color(fg4())
-        .drag_over::<DraggedOp>(|s, _, _, _| s.border_color(focus()).text_color(fg2()))
-        .drag_over::<DraggedStep>(|s, _, _, _| s.border_color(focus()).text_color(fg2()))
-        .child(if empty {
-            "Click or drag operations here"
-        } else {
-            "Drop to add at the end"
+        .border_color(control_border())
+        .text_color(fg3())
+        .drag_over::<DraggedOp>(|s, _, _, _| {
+            s.border_color(focus())
+                .bg(focus().opacity(0.08))
+                .text_color(fg())
         })
+        .drag_over::<DraggedStep>(|s, _, _, _| {
+            s.border_color(focus())
+                .bg(focus().opacity(0.08))
+                .text_color(fg())
+        });
+    if empty {
+        zone.flex_1().min_h(px(200.)).child(ui::empty_state(
+            "list-plus",
+            "No steps yet",
+            "Drag an operation here or click one on the left",
+        ))
+    } else {
+        zone.h(px(56.))
+            .gap(px(7.))
+            .child(ui::icon("plus", 14., fg3()))
+            .child(ui::ui_text(text::CAPTION, fg3()).child("Drop here to add at the end"))
+    }
 }

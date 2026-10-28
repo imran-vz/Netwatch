@@ -1,6 +1,8 @@
 //! Utilify backend. No UI and no gpui dependency.
 //!
+//! - [`alerts`]: the notification rules, a pure engine fed once per tick.
 //! - [`awake`]: keep-awake sessions (power assertions), like Amphetamine.
+//! - [`power`]: the power source (AC or battery, charge, Low Power Mode).
 //! - [`net`]: per-interface byte counters and link speed, and the
 //!   [`net::NetMeter`] that turns two readings into rates.
 //! - [`disk`]: capacity and free space of the startup volume.
@@ -9,19 +11,26 @@
 //! - [`monitor`]: one tick of sampling, plus the rolling history.
 //! - [`icon`]: the menu-bar graph, built as SVG and rasterized with resvg.
 //! - [`format`]: human-readable sizes and rates.
+//! - [`health`]: periodic self-checks of the data directory, tools and files.
 //! - [`sensors`]: named temperature sensors (Apple Silicon).
 //! - [`settings`]: the persisted preferences.
 //! - [`speedtest`]: on-demand speed test via `networkQuality`.
+//!
+//! Persisted files that exist but don't parse are moved aside rather than
+//! overwritten (see [`take_recovered_files`]).
 
+pub mod alerts;
 pub mod awake;
 pub mod disk;
 pub mod disk_history;
 pub mod fans;
 pub mod format;
+pub mod health;
 pub mod history;
 pub mod icon;
 pub mod monitor;
 pub mod net;
+pub mod power;
 pub mod sensors;
 pub mod settings;
 pub mod speedtest;
@@ -29,8 +38,6 @@ pub mod speedtest;
 /// Names the per-user data directory.
 pub const APP_IDENTIFIER: &str = "dev.utilify.app";
 pub const PRODUCT_NAME: &str = "Utilify";
-/// The data directory's name before the app was renamed from Netwatch.
-pub const LEGACY_APP_IDENTIFIER: &str = "dev.netwatch.app";
 
 /// Write `bytes` to `path` atomically, creating its directory: readers see
 /// the old file or the new one, never a partial write. Each save gets its own
@@ -48,23 +55,95 @@ pub fn write_atomic(path: &std::path::Path, bytes: &[u8]) -> std::io::Result<()>
     Ok(())
 }
 
-/// Move the pre-rename data directory to [`APP_IDENTIFIER`], once: only when
-/// the old one exists and the new one doesn't. Call before loading anything.
-pub fn migrate_legacy_data() {
-    let Some(base) = dirs::data_dir() else { return };
-    if let Err(e) = migrate_data_dir(&base) {
-        log::warn!("Moving {LEGACY_APP_IDENTIFIER} data failed: {e}");
+/// Files moved aside by [`load_json`] since the last
+/// [`take_recovered_files`].
+static RECOVERED: std::sync::Mutex<Vec<std::path::PathBuf>> = std::sync::Mutex::new(Vec::new());
+
+/// The corrupt files moved aside since the last call (their new paths), so
+/// the app can tell the user once. Empties the list.
+pub fn take_recovered_files() -> Vec<std::path::PathBuf> {
+    std::mem::take(&mut *RECOVERED.lock().unwrap_or_else(|e| e.into_inner()))
+}
+
+/// Whether `path` is waiting in [`take_recovered_files`], without taking
+/// it (tests run in parallel and share the list).
+#[cfg(test)]
+pub(crate) fn recovered_contains(path: &std::path::Path) -> bool {
+    RECOVERED
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .iter()
+        .any(|p| p == path)
+}
+
+/// Where a corrupt `path` is moved: `settings.json` becomes
+/// `settings.corrupt-<unix secs>.json` in the same directory.
+pub fn corrupt_path(path: &std::path::Path, unix_secs: u64) -> std::path::PathBuf {
+    let stem = path
+        .file_stem()
+        .map_or_else(|| "file".into(), |s| s.to_string_lossy());
+    let ext = path
+        .extension()
+        .map_or_else(|| "json".into(), |s| s.to_string_lossy());
+    path.with_file_name(format!("{stem}.corrupt-{unix_secs}.{ext}"))
+}
+
+/// Move a file that failed to parse out of the way, so the next save doesn't
+/// overwrite what the user had, and remember it for
+/// [`take_recovered_files`]. Never replaces an earlier corrupt copy. The new
+/// path, or `None` if the move failed.
+pub fn quarantine(path: &std::path::Path) -> Option<std::path::PathBuf> {
+    let secs = disk_history::unix_now();
+    let mut to = corrupt_path(path, secs);
+    let mut n = 1;
+    while to.exists() {
+        to = corrupt_path(path, secs).with_extension(format!("{n}.json"));
+        n += 1;
+    }
+    match std::fs::rename(path, &to) {
+        Ok(()) => {
+            log::warn!(
+                "{} didn't parse; moved it to {}",
+                path.display(),
+                to.display()
+            );
+            RECOVERED
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .push(to.clone());
+            Some(to)
+        }
+        Err(e) => {
+            log::warn!("Moving aside unreadable {} failed: {e}", path.display());
+            None
+        }
     }
 }
 
-fn migrate_data_dir(base: &std::path::Path) -> std::io::Result<bool> {
-    let (old, new) = (base.join(LEGACY_APP_IDENTIFIER), base.join(APP_IDENTIFIER));
-    if !old.is_dir() || new.exists() {
-        return Ok(false);
+/// Read and parse a JSON file. `None` when it's missing or unreadable, or
+/// when it doesn't parse, in which case it's first moved aside with
+/// [`quarantine`]. `what` names it in the log.
+pub(crate) fn load_json<T: serde::de::DeserializeOwned>(
+    path: &std::path::Path,
+    what: &str,
+) -> Option<T> {
+    let bytes = match std::fs::read(path) {
+        Ok(b) => b,
+        Err(e) => {
+            if e.kind() != std::io::ErrorKind::NotFound {
+                log::warn!("Reading {what} at {} failed: {e}", path.display());
+            }
+            return None;
+        }
+    };
+    match serde_json::from_slice(&bytes) {
+        Ok(v) => Some(v),
+        Err(e) => {
+            log::warn!("Ignoring unreadable {what} at {}: {e}", path.display());
+            quarantine(path);
+            None
+        }
     }
-    std::fs::rename(&old, &new)?;
-    log::info!("Moved {} to {}", old.display(), new.display());
-    Ok(true)
 }
 
 #[cfg(test)]
@@ -72,24 +151,30 @@ mod tests {
     use super::*;
 
     #[test]
-    fn moves_legacy_data_once() {
-        let base = tempfile::tempdir().unwrap();
-        assert!(!migrate_data_dir(base.path()).unwrap(), "nothing to move");
-        let old = base.path().join(LEGACY_APP_IDENTIFIER);
-        std::fs::create_dir(&old).unwrap();
-        std::fs::write(old.join("settings.json"), "{}").unwrap();
-        assert!(migrate_data_dir(base.path()).unwrap());
-        assert!(
-            base.path()
-                .join(APP_IDENTIFIER)
-                .join("settings.json")
-                .is_file()
+    fn corrupt_files_are_moved_aside_and_reported() {
+        assert_eq!(
+            corrupt_path(std::path::Path::new("/d/settings.json"), 42),
+            std::path::Path::new("/d/settings.corrupt-42.json")
         );
-        assert!(!old.exists());
-        // An existing new directory is never overwritten.
-        std::fs::create_dir(&old).unwrap();
-        assert!(!migrate_data_dir(base.path()).unwrap());
-        assert!(old.exists());
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("x.json");
+        assert_eq!(load_json::<u32>(&path, "x"), None, "missing");
+        std::fs::write(&path, "7").unwrap();
+        assert_eq!(load_json::<u32>(&path, "x"), Some(7));
+        std::fs::write(&path, "oops").unwrap();
+        assert_eq!(load_json::<u32>(&path, "x"), None);
+        assert!(!path.exists());
+        // A second corruption in the same second keeps the first copy.
+        std::fs::write(&path, "again").unwrap();
+        assert_eq!(load_json::<u32>(&path, "x"), None);
+        let moved: Vec<_> = std::fs::read_dir(dir.path())
+            .unwrap()
+            .map(|e| e.unwrap().path())
+            .collect();
+        assert_eq!(moved.len(), 2);
+        // Other tests quarantine into the same list at the same time and
+        // check their own entries, so don't drain it here.
+        assert!(moved.iter().all(|m| recovered_contains(m)));
     }
 
     #[test]

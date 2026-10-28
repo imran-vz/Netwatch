@@ -7,11 +7,12 @@
 //! [`crate::ui`].
 
 use crate::stats::{self, SpeedTest, Stats};
-use crate::ui::{self, color::*, px};
+use crate::ui::{self, color::*, px, radius};
 use gpui_kit::component::input::{InputEvent, InputState};
 use gpui_kit::component::{h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
+use std::rc::Rc;
 use std::time::{Duration, Instant};
 use utilify_core::disk::DiskUsage;
 use utilify_core::disk_history::{self, DiskSample};
@@ -24,11 +25,61 @@ use utilify_core::speedtest;
 
 mod awake;
 mod fans;
+mod status;
 
 pub const WIDTH: f32 = ui::CARD_W + 2. * ui::SHADOW;
-/// Tall enough for the longest tab (Fans); the rest of the window is
-/// transparent, and clicking it closes the dashboard.
+/// The tallest the window gets, in design units; on shorter screens it's
+/// cut to fit and the tab's content scrolls. The window is transparent
+/// below the card, and clicking there closes the dashboard.
 pub const HEIGHT: f32 = 1130.;
+/// What the card spends outside the tab's content: header, tab bar,
+/// panel padding and the shadow margin.
+const CHROME_H: f32 = 236.;
+const KEY_CONTEXT: &str = "Dashboard";
+/// How long a toast stays up; one with an Undo stays longer.
+const TOAST_FOR: Duration = Duration::from_secs(3);
+const UNDO_FOR: Duration = Duration::from_secs(6);
+/// A second click within this long confirms Reset.
+const CONFIRM_FOR: Duration = Duration::from_secs(4);
+
+actions!(
+    dashboard,
+    [
+        Dismiss,
+        NextTab,
+        PrevTab,
+        ShowOverview,
+        ShowNetwork,
+        ShowStorage,
+        ShowAwake,
+        ShowFans,
+        ShowSettings,
+        OpenWorkbench,
+        QuitApp,
+    ]
+);
+
+/// Keyboard shortcuts while the dashboard has focus.
+pub fn init(cx: &mut App) {
+    let k = Some(KEY_CONTEXT);
+    cx.bind_keys([
+        KeyBinding::new("escape", Dismiss, k),
+        KeyBinding::new("cmd-w", Dismiss, k),
+        KeyBinding::new("ctrl-tab", NextTab, k),
+        KeyBinding::new("ctrl-shift-tab", PrevTab, k),
+        KeyBinding::new("cmd-shift-]", NextTab, k),
+        KeyBinding::new("cmd-shift-[", PrevTab, k),
+        KeyBinding::new("cmd-1", ShowOverview, k),
+        KeyBinding::new("cmd-2", ShowNetwork, k),
+        KeyBinding::new("cmd-3", ShowStorage, k),
+        KeyBinding::new("cmd-4", ShowAwake, k),
+        KeyBinding::new("cmd-5", ShowFans, k),
+        KeyBinding::new("cmd-6", ShowSettings, k),
+        KeyBinding::new("cmd-,", ShowSettings, k),
+        KeyBinding::new("cmd-b", OpenWorkbench, k),
+        KeyBinding::new("cmd-q", QuitApp, k),
+    ]);
+}
 /// Bars in the rate graph; each covers `HISTORY_LEN / BARS` samples.
 const BARS: usize = 40;
 const CHART_H: f32 = 210.;
@@ -73,6 +124,22 @@ impl Tab {
         Self::ALL[(self.index() + 1) % Self::ALL.len()]
     }
 
+    fn prev(self) -> Tab {
+        let n = Self::ALL.len();
+        Self::ALL[(self.index() + n - 1) % n]
+    }
+
+    fn icon(self) -> &'static str {
+        match self {
+            Tab::Overview => "layout-dashboard",
+            Tab::Network => "activity",
+            Tab::Storage => "hard-drive",
+            Tab::Awake => "coffee",
+            Tab::Fans => "fan",
+            Tab::Settings => "settings",
+        }
+    }
+
     pub fn parse(name: &str) -> Option<Tab> {
         Self::ALL
             .into_iter()
@@ -80,9 +147,18 @@ impl Tab {
     }
 }
 
+/// A short confirmation along the card's bottom edge.
+pub(crate) struct Toast {
+    tone: ui::Tone,
+    message: SharedString,
+    /// Label and handler of a button on it, like Undo.
+    action: Option<(SharedString, ui::Callback)>,
+}
+
 pub struct Dashboard {
     stats: Entity<Stats>,
     tab: Tab,
+    focus: FocusHandle,
     interval_menu_open: bool,
     /// Whether the speed test section on Network is unfolded.
     speed_test_open: bool,
@@ -95,11 +171,22 @@ pub struct Dashboard {
     fan_hint: Option<SharedString>,
     /// The Settings tab's menu-bar sensor list is unfolded.
     temp_menu_open: bool,
-    _subscriptions: [Subscription; 3],
+    /// Reset was clicked once; a second click before this confirms it.
+    reset_armed: Option<Instant>,
+    toast: Option<Toast>,
+    toast_task: Option<Task<()>>,
+    /// Tallest the tab's content may be before it scrolls, in design units.
+    body_max_h: f32,
+    _subscriptions: Vec<Subscription>,
 }
 
 impl Dashboard {
-    pub fn new(stats: Entity<Stats>, window: &mut Window, cx: &mut Context<Self>) -> Self {
+    pub fn new(
+        stats: Entity<Stats>,
+        body_max_h: f32,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let observe = cx.observe(&stats, |_, _, cx| cx.notify());
         // Dismiss like a popover when focus moves elsewhere. Debug builds
         // can pin it open with UTILIFY_DEV_PIN, for inspecting it.
@@ -109,15 +196,23 @@ impl Dashboard {
                 dismiss(window, cx);
             }
         });
+        // Light or dark, live: the palette follows the OS.
+        let appearance = cx.observe_window_appearance(window, |_, _, cx| {
+            crate::theme::follow_system(cx);
+            cx.notify();
+        });
         let preset_name = cx.new(|cx| InputState::new(window, cx).placeholder("Preset name"));
         let enter = cx.subscribe_in(&preset_name, window, |this, _, ev, window, cx| {
             if let InputEvent::PressEnter { .. } = ev {
                 this.save_preset(window, cx);
             }
         });
+        let focus = cx.focus_handle();
+        focus.focus(window, cx);
         Self {
             stats,
             tab: state(cx).tab,
+            focus,
             speed_test_open: state(cx).speed_test_open,
             interval_menu_open: false,
             storage_hover: None,
@@ -125,7 +220,11 @@ impl Dashboard {
             fan_renaming: None,
             fan_hint: None,
             temp_menu_open: false,
-            _subscriptions: [observe, activation, enter],
+            reset_armed: None,
+            toast: None,
+            toast_task: None,
+            body_max_h,
+            _subscriptions: vec![observe, activation, appearance, enter],
         }
     }
 
@@ -134,8 +233,49 @@ impl Dashboard {
         self.interval_menu_open = false;
         self.temp_menu_open = false;
         self.storage_hover = None;
+        self.reset_armed = None;
         state(cx).tab = tab;
         cx.notify();
+    }
+
+    /// Show a toast for a few seconds, replacing any showing.
+    pub(crate) fn show_toast(
+        &mut self,
+        tone: ui::Tone,
+        message: impl Into<SharedString>,
+        action: Option<(&str, ui::Callback)>,
+        cx: &mut Context<Self>,
+    ) {
+        let stay = if action.is_some() { UNDO_FOR } else { TOAST_FOR };
+        self.toast = Some(Toast {
+            tone,
+            message: message.into(),
+            action: action.map(|(l, f)| (SharedString::from(l.to_string()), f)),
+        });
+        self.toast_task = Some(cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(stay).await;
+            let _ = this.update(cx, |d, cx| {
+                d.toast = None;
+                cx.notify();
+            });
+        }));
+        cx.notify();
+    }
+
+    fn toast_view(&self, cx: &mut Context<Self>) -> Option<Div> {
+        let t = self.toast.as_ref()?;
+        let action = t.action.as_ref().map(|(label, f)| {
+            let f = f.clone();
+            ui::banner_button("toast-action", label)
+                .text_color(fg())
+                .font_weight(FontWeight::MEDIUM)
+                .on_click(cx.listener(move |this, _, window, cx| {
+                    this.toast = None;
+                    f(window, cx);
+                    cx.notify();
+                }))
+        });
+        Some(ui::toast(t.tone, t.message.clone(), action))
     }
 }
 
@@ -152,6 +292,11 @@ struct Snapshot {
     speed_test: SpeedTest,
     awake: awake::Snapshot,
     fans: fans::Snapshot,
+    power: utilify_core::power::PowerState,
+    problems: Vec<stats::Problem>,
+    health: Vec<utilify_core::health::Check>,
+    health_at: Option<Instant>,
+    health_running: bool,
 }
 
 impl Snapshot {
@@ -169,6 +314,11 @@ impl Snapshot {
             speed_test: stats.speed_test.clone(),
             awake: awake::Snapshot::read(stats),
             fans: fans::Snapshot::read(stats),
+            power: stats.power,
+            problems: stats.problems.clone(),
+            health: stats.health.clone(),
+            health_at: stats.health_at,
+            health_running: stats.health_running(),
         }
     }
 
@@ -188,11 +338,8 @@ impl Snapshot {
 
 fn live_label(rates: &NetRates) -> AnyElement {
     match rates.link {
-        Some(_) => div().text_color(ok()).child("live").into_any_element(),
-        None => div()
-            .text_color(danger())
-            .child("offline")
-            .into_any_element(),
+        Some(_) => ui::pill("live", ok()).into_any_element(),
+        None => ui::pill("offline", danger()).into_any_element(),
     }
 }
 
@@ -205,25 +352,29 @@ fn text(s: impl Into<SharedString>) -> AnyElement {
 fn rates_section(s: &Snapshot) -> Div {
     let peak = History::peak(&s.points);
     v_flex()
-        .gap(px(22.))
+        .gap(px(14.))
         .child(
             v_flex()
-                .gap(px(10.))
+                .gap(px(8.))
                 .child(ui::rate_bars(
                     history::bars(&s.points, s.capacity, BARS),
                     peak.max(MIN_PEAK),
                 ))
                 .child(ui::caption(
-                    ui::mono(13., fg3()).child(format!("peak {}", format::rate(peak))),
-                    ui::mono(13., fg3())
+                    ui::mono(ui::text::MICRO, fg3()).child(format!("peak {}", format::rate(peak))),
+                    ui::mono(ui::text::MICRO, fg3())
                         .child(format!("last {}", format::span(s.graph_span().as_secs()))),
                 )),
         )
         .child(
             h_flex()
-                .gap(px(14.))
-                .child(ui::rate_box("arrow-down", &format::rate(s.rates.down)))
-                .child(ui::rate_box("arrow-up", &format::rate(s.rates.up))),
+                .gap(px(12.))
+                .child(ui::rate_box(
+                    "arrow-down",
+                    "Download",
+                    &format::rate(s.rates.down),
+                ))
+                .child(ui::rate_box("arrow-up", "Upload", &format::rate(s.rates.up))),
         )
 }
 
@@ -231,9 +382,10 @@ fn rates_section(s: &Snapshot) -> Div {
 /// history. Shared by Overview and Storage.
 fn storage_section(s: &Snapshot) -> Div {
     let Some(d) = s.disk else {
-        return v_flex().child(ui::label_row(
-            "Storage",
-            ui::ui_text(14.5, fg3()).child("unavailable"),
+        return v_flex().child(ui::empty_state(
+            "hard-drive",
+            "Can't read the startup disk",
+            "Utilify keeps trying; this clears once macOS answers.",
         ));
     };
     let change = match s.disk_range() {
@@ -242,23 +394,22 @@ fn storage_section(s: &Snapshot) -> Div {
             format::bytes_delta(last.used as i64 - first.used as i64),
             format::span(last.at - first.at)
         ),
-        None => "collecting…".into(),
+        None => "collecting history…".into(),
     };
+    let level = s.settings.storage_level(d.used_fraction());
     v_flex()
+        .gap(px(10.))
         .child(ui::label_row(
-            "Storage",
+            "Startup disk",
             h_flex()
                 .items_baseline()
                 .gap(px(6.))
-                .child(ui::mono(15., fg()).child(format::bytes(d.used())))
-                .child(ui::mono(15., fg2()).child(format!("of {}", format::bytes(d.total)))),
+                .child(ui::mono(ui::text::LABEL, fg()).child(format::bytes(d.used())))
+                .child(
+                    ui::mono(ui::text::SMALL, fg3()).child(format!("of {}", format::bytes(d.total))),
+                ),
         ))
-        .child(div().h(px(12.)))
-        .child(ui::storage_bar(
-            d.used_fraction(),
-            ui::level_color(s.settings.storage_level(d.used_fraction())),
-        ))
-        .child(div().h(px(10.)))
+        .child(ui::storage_bar(d.used_fraction(), ui::level_color(level)))
         .child(ui::caption(
             ui::dotted(vec![
                 text(format!("{} used", format::percent(d.used_fraction()))),
@@ -268,8 +419,26 @@ fn storage_section(s: &Snapshot) -> Div {
         ))
 }
 
+/// A bordered group of settings rows, ruled off from each other.
+fn group(rows: Vec<AnyElement>) -> Div {
+    let mut g = v_flex()
+        .rounded(radius(ui::R_MD))
+        .border_1()
+        .border_color(control_border())
+        .bg(control());
+    for (i, row) in rows.into_iter().enumerate() {
+        g = g.child(
+            div()
+                .px(px(14.))
+                .when(i > 0, |d| d.border_t_1().border_color(sep()))
+                .child(row),
+        );
+    }
+    g
+}
+
 impl Dashboard {
-    fn header(&self, s: &Snapshot, cx: &mut Context<Self>) -> Div {
+    fn header(&self, s: &Snapshot) -> Div {
         let link = s.rates.link.as_ref();
         let (icon, title, subtitle, chip): (&str, SharedString, Vec<AnyElement>, _) = match self.tab
         {
@@ -278,9 +447,26 @@ impl Dashboard {
                 if let Some(l) = link {
                     parts.push(text(l.name.clone()));
                 }
-                parts.push(live_label(&s.rates));
+                if link.is_none() {
+                    parts.push(live_label(&s.rates));
+                }
                 if let Some(d) = s.disk {
                     parts.push(text(format!("{} free", format::bytes(d.available))));
+                }
+                if s.power.on_battery {
+                    // The same (clamped) threshold the low-battery alert uses.
+                    let threshold = s.settings.alert_prefs().low_battery_pct;
+                    let low = s.power.percent.is_some_and(|p| p <= threshold);
+                    let label = match s.power.percent {
+                        Some(p) => format!("battery {p}%"),
+                        None => "on battery".into(),
+                    };
+                    parts.push(
+                        div()
+                            .text_color(if low { caution() } else { fg2() })
+                            .child(label)
+                            .into_any_element(),
+                    );
                 }
                 ("layout-grid", "Utilify".into(), parts, None)
             }
@@ -292,7 +478,9 @@ impl Dashboard {
                         parts.push(text(format::bits_per_sec(l.capacity_bps)));
                     }
                 }
-                parts.push(live_label(&s.rates));
+                if link.is_none() {
+                    parts.push(live_label(&s.rates));
+                }
                 ("activity", "Network".into(), parts, None)
             }
             Tab::Storage => {
@@ -329,43 +517,40 @@ impl Dashboard {
             title,
             ui::dotted(subtitle),
             chip,
-            h_flex()
-                .id("header-actions")
-                .flex_none()
-                .gap(px(8.))
-                .child(
-                    ui::icon_button("open-workbench", ui::icon("chef-hat", 18., fg()))
-                        .cursor_pointer()
-                        .hover(|s| s.bg(rgb(0x222222)))
-                        .on_click(|_, _, cx| crate::workbench::open(cx)),
-                )
-                .child(
-                    ui::icon_button("next-tab", ui::icon("chevron-right", 18., fg()))
-                        .cursor_pointer()
-                        .hover(|s| s.bg(rgb(0x222222)))
-                        .on_click(cx.listener(|this, _, _, cx| this.set_tab(this.tab.next(), cx))),
-                ),
+            h_flex().flex_none().gap(px(8.)).child(
+                ui::icon_action("open-workbench", "chef-hat", "Open Workbench", Some("⌘B"))
+                    .on_click(|_, _, cx| crate::workbench::open(cx)),
+            ),
         )
     }
 
-    fn tabs(&self, cx: &mut Context<Self>) -> Div {
-        let segments = Tab::ALL
+    fn tabs(&self, s: &Snapshot, cx: &mut Context<Self>) -> Div {
+        let items = Tab::ALL
             .iter()
-            .map(|&t| {
-                div()
-                    .id(t.label())
-                    .child(t.label())
-                    .on_click(cx.listener(move |this, _, _, cx| this.set_tab(t, cx)))
+            .enumerate()
+            .map(|(i, &t)| ui::TabItem {
+                id: t.label().into(),
+                icon: t.icon(),
+                label: t.label(),
+                keys: format!("⌘{}", i + 1).into(),
+                badge: tab_badge(t, s),
+                on_click: Box::new(cx.listener(move |this, _, _, cx| this.set_tab(t, cx))),
             })
             .collect();
-        ui::segmented(segments, self.tab.index())
+        ui::tab_bar(items, self.tab.index())
     }
 
-    fn overview(&self, s: &Snapshot) -> Div {
+    fn overview(&self, s: &Snapshot, cx: &mut Context<Self>) -> Div {
         v_flex()
-            .gap(px(22.))
-            .child(rates_section(s))
-            .child(storage_section(s))
+            .gap(px(20.))
+            .children(self.issue_banners(s, cx))
+            .child(ui::section(
+                "Network",
+                Some(live_label(&s.rates)),
+                rates_section(s),
+            ))
+            .child(ui::separator())
+            .child(ui::section("Storage", None, storage_section(s)))
             .child(ui::separator())
             .child(awake::overview_section(s))
     }
@@ -389,16 +574,22 @@ impl Dashboard {
             }
             None => div()
                 .text_color(danger())
-                .child("offline")
+                .child("Not connected")
                 .into_any_element(),
         };
         let (down, up) = s.session;
         v_flex()
-            .gap(px(22.))
-            .child(rates_section(s))
-            .child(
+            .gap(px(20.))
+            .child(ui::section(
+                "Throughput",
+                Some(live_label(&s.rates)),
+                rates_section(s),
+            ))
+            .child(ui::section(
+                "Connection",
+                None,
                 v_flex()
-                    .gap(px(10.))
+                    .gap(px(6.))
                     .child(ui::kv("Link", link))
                     .child(ui::kv(
                         "This session",
@@ -407,7 +598,7 @@ impl Dashboard {
                             text(format!("↑ {}", format::bytes(up))),
                         ]),
                     )),
-            )
+            ))
             .child(ui::separator())
             .child(self.speed_test(s, cx))
     }
@@ -420,7 +611,8 @@ impl Dashboard {
             .id("speed-test-head")
             .justify_between()
             .cursor_pointer()
-            .child(ui::ui_text(14.5, fg2()).child("Speed test"))
+            .rounded(radius(ui::R_SM))
+            .child(ui::section_label("Speed test"))
             .child(
                 h_flex()
                     .gap(px(8.))
@@ -431,6 +623,7 @@ impl Dashboard {
                         fg3(),
                     )),
             )
+            .tooltip(ui::tip(if open { "Fold" } else { "Unfold" }, None))
             .on_click(cx.listener(|this, _, _, cx| {
                 this.speed_test_open = !this.speed_test_open;
                 state(cx).speed_test_open = this.speed_test_open;
@@ -438,82 +631,125 @@ impl Dashboard {
             }));
         v_flex().gap(px(12.)).child(head).when(open, |v| {
             v.child(speed_test_body(s))
-                .child(div().h(px(10.)))
-                .child(speed_test_button(&s.speed_test, cx))
+                .child(div().h(px(6.)))
+                .child(speed_test_button(s, cx))
         })
     }
 
     fn storage(&self, s: &Snapshot, cx: &mut Context<Self>) -> Div {
         v_flex()
-            .gap(px(22.))
-            .child(storage_chart(
-                s,
-                self.storage_hover,
-                cx.entity().downgrade(),
+            .gap(px(20.))
+            .child(ui::section(
+                "Used space",
+                Some(
+                    ui::ui_text(ui::text::CAPTION, fg3())
+                        .child("last 30 days")
+                        .into_any_element(),
+                ),
+                storage_chart(s, self.storage_hover, cx.entity().downgrade()),
             ))
             .child(storage_section(s))
     }
 
     fn settings(&self, s: &Snapshot, cx: &mut Context<Self>) -> Div {
         let show_rates = s.settings.show_rates;
-        // One list of rows, each ruled off from the one above.
-        v_flex()
-            .child(
-                v_flex()
-                    .child(setting_row(
-                        "Refresh every",
-                        "How often the icon updates",
-                        true,
-                        self.interval_dropdown(&s.settings, cx),
-                    ))
-                    .child(setting_row(
-                        "Show speeds in menu bar",
-                        "Rates as text next to the icon",
-                        false,
-                        ui::toggle("show-rates", show_rates).on_click(|_, _, cx| {
-                            crate::update_settings(cx, |s| s.show_rates = !s.show_rates);
-                        }),
-                    ))
-                    .child(setting_row(
-                        "Show temperature in menu bar",
-                        &format!("{}, like 80°C", self.menu_sensor_name(s)),
-                        false,
-                        ui::toggle("show-temp", s.settings.show_temp).on_click(|_, _, cx| {
-                            crate::update_settings(cx, |s| s.show_temp = !s.show_temp);
-                        }),
-                    ))
-                    .when(s.settings.show_temp, |v| {
-                        v.child(self.temp_sensor_picker(s, cx))
-                    })
-                    .child(setting_row(
-                        "Show fan speed in menu bar",
-                        "The fastest fan, like 5775rpm",
-                        false,
-                        ui::toggle("show-fan-rpm", s.settings.show_fan_rpm).on_click(|_, _, cx| {
-                            crate::update_settings(cx, |s| s.show_fan_rpm = !s.show_fan_rpm);
-                        }),
-                    )),
+        let mut menu_bar: Vec<AnyElement> = vec![
+            setting_row(
+                "Refresh every",
+                "How often the icon and graphs update",
+                self.interval_dropdown(&s.settings, cx),
             )
-            .child(storage_colors(s))
-            .child(setting_row(
+            .into_any_element(),
+            setting_row(
+                "Show speeds",
+                "Rates as text next to the icon",
+                ui::toggle("show-rates", show_rates).on_click(|_, _, cx| {
+                    crate::update_settings(cx, |s| s.show_rates = !s.show_rates);
+                }),
+            )
+            .into_any_element(),
+            setting_row(
+                "Show temperature",
+                &format!("{}, like 80°C", self.menu_sensor_name(s)),
+                ui::toggle("show-temp", s.settings.show_temp).on_click(|_, _, cx| {
+                    crate::update_settings(cx, |s| s.show_temp = !s.show_temp);
+                }),
+            )
+            .into_any_element(),
+        ];
+        if s.settings.show_temp {
+            menu_bar.push(self.temp_sensor_picker(s, cx).into_any_element());
+        }
+        menu_bar.push(
+            setting_row(
+                "Show fan speed",
+                "The fastest fan, like 5775rpm",
+                ui::toggle("show-fan-rpm", s.settings.show_fan_rpm).on_click(|_, _, cx| {
+                    crate::update_settings(cx, |s| s.show_fan_rpm = !s.show_fan_rpm);
+                }),
+            )
+            .into_any_element(),
+        );
+
+        let storage = vec![
+            storage_colors(s).into_any_element(),
+            setting_row(
                 "Notify in the red",
                 &format!(
                     "When the startup disk passes {:.0}%",
                     s.settings.storage_thresholds().1 * 100.0
                 ),
-                false,
                 ui::toggle("storage-notify", s.settings.storage_notify).on_click(|_, _, cx| {
                     crate::update_settings(cx, |s| s.storage_notify = !s.storage_notify);
                 }),
+            )
+            .into_any_element(),
+        ];
+
+        let armed = self.reset_armed.is_some_and(|t| t.elapsed() < CONFIRM_FOR);
+        let reset = if armed {
+            ui::danger_button("reset", "Reset all settings?").on_click(cx.listener(
+                |this, _, _, cx| {
+                    this.reset_armed = None;
+                    let before = this.stats.read(cx).settings.clone();
+                    crate::update_settings(cx, |s| *s = Settings::default());
+                    let undo: ui::Callback = Rc::new(move |_, cx| {
+                        let before = before.clone();
+                        crate::update_settings(cx, move |s| *s = before);
+                    });
+                    this.show_toast(ui::Tone::Ok, "Settings reset", Some(("Undo", undo)), cx);
+                },
             ))
+        } else {
+            ui::button("reset", "Reset…", false)
+                .tooltip(ui::tip("Put every setting back to its default", None))
+                .on_click(cx.listener(|this, _, _, cx| {
+                    this.reset_armed = Some(Instant::now());
+                    // Disarm on its own if the second click doesn't come.
+                    cx.spawn(async move |this, cx| {
+                        cx.background_executor().timer(CONFIRM_FOR).await;
+                        let _ = this.update(cx, |_, cx| cx.notify());
+                    })
+                    .detach();
+                    cx.notify();
+                }))
+        };
+
+        v_flex()
+            .gap(px(20.))
+            .children(self.issue_banners(s, cx))
+            .child(ui::section("Menu bar", None, group(menu_bar)))
+            .child(ui::section("Storage", None, group(storage)))
+            .children(self.settings_extra(s, cx))
             .child(
                 h_flex()
-                    .pt(px(8.))
-                    .gap(px(14.))
-                    .child(ui::button("reset", "Reset", false).on_click(|_, _, cx| {
-                        crate::update_settings(cx, |s| *s = Settings::default());
-                    }))
-                    .child(ui::button("quit", "Quit", true).on_click(|_, _, cx| cx.quit())),
+                    .gap(px(12.))
+                    .child(reset)
+                    .child(
+                        ui::button("quit", format!("Quit {}", utilify_core::PRODUCT_NAME), true)
+                            .tooltip(ui::tip("Fans go back to automatic", Some("⌘Q")))
+                            .on_click(|_, _, cx| cx.quit()),
+                    ),
             )
     }
 
@@ -541,10 +777,10 @@ impl Dashboard {
             .px(px(12.))
             .gap(px(8.))
             .justify_between()
-            .rounded(px(8.))
+            .rounded(radius(ui::R_MD))
             .border_1()
             .border_color(if open { focus() } else { card_border() })
-            .text_size(px(15.))
+            .text_size(px(ui::text::SMALL))
             .cursor_pointer()
             .child(self.menu_sensor_name(s))
             .child(ui::icon(
@@ -563,12 +799,12 @@ impl Dashboard {
                 .max_h(px(260.))
                 .overflow_y_scroll()
                 .p(px(4.))
-                .rounded(px(10.))
+                .rounded(radius(ui::R_MD))
                 .border_1()
                 .border_color(card_border())
-                .bg(rgb(0x141414));
+                .bg(popover());
             if sensors.is_empty() {
-                v = v.child(ui::ui_text(14.5, fg3()).p(px(6.)).child("Reading sensors…"));
+                v = v.child(ui::ui_text(ui::text::SMALL, fg3()).p(px(6.)).child("Reading sensors…"));
             }
             for sensor in sensors {
                 let selected = sensor.id == current;
@@ -579,13 +815,13 @@ impl Dashboard {
                         .h(px(31.))
                         .px(px(8.))
                         .gap(px(8.))
-                        .rounded(px(7.))
-                        .text_size(px(14.5))
+                        .rounded(radius(ui::R_SM))
+                        .text_size(px(ui::text::SMALL))
                         .text_color(if selected { fg() } else { fg2() })
                         .cursor_pointer()
                         .hover(|s| s.bg(raised()).text_color(fg()))
                         .child(div().flex_1().child(sensor.name.clone()))
-                        .child(ui::mono(13.5, fg3()).child(format!("{:.0}°C", sensor.celsius)))
+                        .child(ui::mono(ui::text::CAPTION, fg3()).child(format!("{:.0}°C", sensor.celsius)))
                         .child(
                             div()
                                 .w(px(14.))
@@ -612,10 +848,10 @@ impl Dashboard {
             .px(px(12.))
             .gap(px(8.))
             .justify_between()
-            .rounded(px(8.))
+            .rounded(radius(ui::R_MD))
             .border_1()
             .border_color(if open { focus() } else { card_border() })
-            .text_size(px(15.))
+            .text_size(px(ui::text::SMALL))
             .cursor_pointer()
             .child(crate::tray::interval_label(settings.interval_ms))
             .child(ui::icon(
@@ -639,14 +875,14 @@ impl Dashboard {
                     .h(px(33.))
                     .px(px(10.))
                     .gap(px(8.))
-                    .rounded(px(7.))
-                    .text_size(px(15.))
+                    .rounded(radius(ui::R_SM))
+                    .text_size(px(ui::text::SMALL))
                     .text_color(if selected { fg() } else { fg2() })
                     .cursor_pointer()
                     .hover(|s| s.bg(raised()).text_color(fg()))
                     .child(div().flex_1().child(crate::tray::interval_label(ms)))
                     .child(
-                        ui::mono(13.5, fg3())
+                        ui::mono(ui::text::CAPTION, fg3())
                             .child(format!("{} graph", format::span(reach.as_secs()))),
                     )
                     .child(
@@ -666,12 +902,12 @@ impl Dashboard {
                     .right_0()
                     .w(px(220.))
                     .p(px(6.))
-                    .bg(rgb(0x141414))
+                    .bg(popover())
                     .border_1()
                     .border_color(card_border())
-                    .rounded(px(12.))
+                    .rounded(radius(ui::R_MD))
                     .shadow(vec![BoxShadow {
-                        color: hsla(0., 0., 0., 0.6),
+                        color: shadow(),
                         offset: point(px(0.), px(16.)),
                         blur_radius: px(40.),
                         spread_radius: px(0.),
@@ -713,20 +949,18 @@ fn storage_colors(s: &Snapshot) -> Div {
         v_flex()
             .flex_1()
             .gap(px(8.))
-            .child(ui::ui_text(14.5, fg2()).child(label.to_string()))
+            .child(ui::ui_text(ui::text::CAPTION, fg3()).child(label.to_string()))
             .child(stepper)
     };
     v_flex()
         .gap(px(12.))
         .py(px(14.))
-        .border_t_1()
-        .border_color(sep())
         .child(
             h_flex()
                 .justify_between()
                 .items_baseline()
-                .child(ui::ui_text(17., fg()).child("Storage colours"))
-                .child(ui::ui_text(14.5, fg3()).child("% used")),
+                .child(ui::ui_text(ui::text::BODY, fg()).child("Bar colours"))
+                .child(ui::ui_text(ui::text::CAPTION, fg3()).child("% of the disk used")),
         )
         .child(ui::zone_bar(
             yellow,
@@ -757,19 +991,19 @@ fn storage_colors(s: &Snapshot) -> Div {
         )
 }
 
-fn setting_row(title: &str, detail: &str, first: bool, control: impl IntoElement) -> Div {
+fn setting_row(title: &str, detail: &str, control: impl IntoElement) -> Div {
     h_flex()
         .gap(px(16.))
-        .py(px(14.))
-        .when(first, |r| r.pt(px(2.)))
-        .when(!first, |r| r.border_t_1().border_color(sep()))
+        .py(px(12.))
         .child(
             v_flex()
                 .flex_1()
                 .min_w_0()
-                .gap(px(3.))
-                .child(ui::ui_text(17., fg()).child(title.to_string()))
-                .child(ui::ui_text(14.5, fg3()).child(detail.to_string())),
+                .gap(px(2.))
+                .child(ui::ui_text(ui::text::BODY, fg()).child(title.to_string()))
+                .when(!detail.is_empty(), |v| {
+                    v.child(ui::ui_text(ui::text::CAPTION, fg3()).child(detail.to_string()))
+                }),
         )
         .child(control)
 }
@@ -800,7 +1034,7 @@ fn speed_test_status(s: &Snapshot, open: bool) -> Div {
         )),
         SpeedTest::Failed(_) => div()
             .text_color(danger())
-            .child("failed")
+            .child("didn't finish")
             .into_any_element(),
     };
     let parts = match &s.speed_test {
@@ -813,11 +1047,39 @@ fn speed_test_status(s: &Snapshot, open: bool) -> Div {
         SpeedTest::Done { .. } => vec![text("Mbps"), status],
         _ => vec![status],
     };
-    ui::dotted(parts).text_size(px(14.5)).text_color(fg3())
+    ui::dotted(parts)
+        .text_size(px(ui::text::CAPTION))
+        .text_color(fg3())
+}
+
+/// What went wrong, in words, from `networkQuality`'s error.
+fn speed_test_problem(error: &str, offline: bool) -> (&'static str, String) {
+    if offline {
+        return (
+            "You're offline",
+            "The test needs an internet connection. Connect, then try again.".into(),
+        );
+    }
+    if error.contains("macOS 12") {
+        return (
+            "Speed test needs macOS 12 or later",
+            "It uses macOS's own networkQuality tool, which this Mac doesn't have.".into(),
+        );
+    }
+    if error.contains("did not complete") {
+        return (
+            "The test stopped early",
+            "One of the two measurements didn't finish, often because the connection \
+             dropped for a moment. Try again."
+                .into(),
+        );
+    }
+    ("The speed test didn't finish", format!("{error}. Try again in a moment."))
 }
 
 /// The last result next to the link rate, and latency idle vs under load.
 fn speed_test_body(s: &Snapshot) -> Div {
+    let offline = s.rates.link.is_none();
     match &s.speed_test {
         SpeedTest::Done { result, .. } => {
             let cap = s.rates.link.as_ref().map_or(0, |l| l.capacity_bps);
@@ -845,9 +1107,33 @@ fn speed_test_body(s: &Snapshot) -> Div {
             }
             body
         }
-        SpeedTest::Failed(e) => v_flex().child(ui::ui_text(14.5, fg3()).child(e.clone())),
-        SpeedTest::Idle | SpeedTest::Running { .. } => v_flex()
-            .child(ui::ui_text(14.5, fg3()).child("Measures against Apple's servers, about 20 s")),
+        SpeedTest::Failed(e) => {
+            let (title, detail) = speed_test_problem(e, offline);
+            v_flex().child(ui::banner(
+                ui::Tone::Danger,
+                title,
+                vec![ui::note(detail)],
+                vec![],
+            ))
+        }
+        _ if !speed_test_available() => v_flex().child(ui::banner(
+            ui::Tone::Info,
+            "Speed test needs macOS 12 or later",
+            vec![ui::note(
+                "It uses macOS's own networkQuality tool, which this Mac doesn't have.",
+            )],
+            vec![],
+        )),
+        _ if offline => v_flex().child(ui::banner(
+            ui::Tone::Caution,
+            "You're offline",
+            vec![ui::note("Connect to a network to run a test.")],
+            vec![],
+        )),
+        SpeedTest::Idle | SpeedTest::Running { .. } => v_flex().child(
+            ui::ui_text(ui::text::SMALL, fg3())
+                .child("Measures against Apple's servers. Takes about 20 seconds."),
+        ),
     }
 }
 
@@ -855,28 +1141,68 @@ fn speed_test_body(s: &Snapshot) -> Div {
 /// responsiveness as round trips per minute under load, so 60000 / RPM is the
 /// loaded round-trip time in ms.
 fn latency(r: &speedtest::SpeedTestResult) -> Option<Div> {
+    let parts = latency_parts(r);
+    (!parts.is_empty()).then(|| {
+        ui::dotted(
+            parts
+                .into_iter()
+                .map(|(t, c)| match c {
+                    Some(c) => div().text_color(c).child(t).into_any_element(),
+                    None => text(t),
+                })
+                .collect(),
+        )
+    })
+}
+
+fn latency_parts(r: &speedtest::SpeedTestResult) -> Vec<(String, Option<Hsla>)> {
     let mut parts = vec![];
     if let Some(ms) = r.idle_latency_ms {
-        parts.push(text(format!("{ms:.0} ms idle")));
+        parts.push((format!("{ms:.0} ms idle"), None));
     }
     if let Some(rpm) = r.responsiveness_rpm.filter(|r| *r > 0.0) {
         let loaded = 60_000.0 / rpm;
-        parts.push(text(format!("{loaded:.0} ms loaded")));
+        parts.push((format!("{loaded:.0} ms loaded"), None));
         let (label, color) = match loaded {
             l if l < 60.0 => ("Good", ok()),
             l if l < 150.0 => ("Fair", caution()),
             _ => ("Poor", danger()),
         };
-        parts.push(div().text_color(color).child(label).into_any_element());
+        parts.push((label.to_string(), Some(color)));
     }
-    (!parts.is_empty()).then(|| ui::dotted(parts))
+    parts
 }
 
-fn speed_test_button(state: &SpeedTest, cx: &mut Context<Dashboard>) -> Div {
+/// A test's results as text, for the clipboard.
+fn speed_test_summary(r: &speedtest::SpeedTestResult) -> String {
+    let mut out = format!(
+        "Download {} Mbps, upload {} Mbps",
+        mbps(r.down_bps),
+        mbps(r.up_bps)
+    );
+    let latency: Vec<String> = latency_parts(r).into_iter().map(|(t, _)| t).collect();
+    if !latency.is_empty() {
+        out.push_str(&format!(", latency {}", latency.join(", ")));
+    }
+    if let Some(i) = &r.interface {
+        out.push_str(&format!(" ({i})"));
+    }
+    out
+}
+
+/// Whether `networkQuality` is installed. It ships with macOS, so it's
+/// looked up once rather than on every frame.
+fn speed_test_available() -> bool {
+    static AVAILABLE: std::sync::LazyLock<bool> = std::sync::LazyLock::new(speedtest::is_available);
+    *AVAILABLE
+}
+
+fn speed_test_button(s: &Snapshot, cx: &mut Context<Dashboard>) -> Div {
+    let state = &s.speed_test;
+    let can_run = s.rates.link.is_some() && speed_test_available();
     let start = |_: &ClickEvent, _: &mut Window, cx: &mut App| {
         stats::stats(cx).update(cx, |s, cx| s.start_speed_test(cx));
     };
-    let _ = cx;
     let button = match state {
         SpeedTest::Running { started } => {
             let elapsed = started.elapsed();
@@ -888,28 +1214,43 @@ fn speed_test_button(state: &SpeedTest, cx: &mut Context<Dashboard>) -> Div {
             )
             .text_color(fg())
             .cursor_default()
-            // The button itself fills as the test runs. A full-height fill
-            // can share the button's rounded corners; a thin line along the
-            // bottom edge can't, since clipping ignores the rounding.
-            .child({
-                let p = progress.clamp(0.0, 1.0);
+            // The button itself fills as the test runs.
+            .child(
                 div()
                     .absolute()
                     .top_0()
                     .bottom_0()
                     .left_0()
-                    .w(relative(p))
-                    .rounded_l(px(11.))
-                    .when(p > 0.98, |d| d.rounded_r(px(11.)))
-                    .bg(ok().opacity(0.16))
-            })
+                    .w(relative(progress.clamp(0.0, 1.0)))
+                    .bg(ok().opacity(0.16)),
+            )
         }
-        _ => ui::button("speed-test", "Run test", true).on_click(start),
+        _ if !can_run => ui::button("speed-test", "Run test", false)
+            .opacity(0.5)
+            .cursor_default(),
+        SpeedTest::Failed(_) => ui::button("speed-test", "Try again", true).on_click(start),
+        SpeedTest::Done { .. } => ui::button("speed-test", "Run again", true).on_click(start),
+        SpeedTest::Idle => ui::button("speed-test", "Run test", true).on_click(start),
+    };
+    let copy = match state {
+        SpeedTest::Done { result, .. } => {
+            let summary = speed_test_summary(result);
+            Some(
+                ui::icon_action("speed-test-copy", "copy", "Copy results", None)
+                    .size(px(42.))
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        cx.write_to_clipboard(ClipboardItem::new_string(summary.clone()));
+                        this.show_toast(ui::Tone::Ok, "Results copied", None, cx);
+                    })),
+            )
+        }
+        _ => None,
     };
     let running = matches!(state, SpeedTest::Running { .. });
     h_flex()
         .gap(px(10.))
         .child(button)
+        .children(copy)
         .when(running, |row| row.child(cancel_button()))
 }
 
@@ -918,16 +1259,17 @@ fn cancel_button() -> Stateful<Div> {
     div()
         .id("speed-test-cancel")
         .flex_none()
-        .size(px(43.))
+        .size(px(42.))
         .flex()
         .items_center()
         .justify_center()
-        .rounded(px(12.))
+        .rounded(radius(ui::R_MD))
         .border_1()
         .border_color(danger().opacity(0.45))
         .bg(danger().opacity(0.12))
         .cursor_pointer()
         .hover(|s| s.bg(danger().opacity(0.22)))
+        .tooltip(ui::tip("Stop the test", None))
         .child(ui::icon("x", 18., danger()))
         .on_click(|_, _, cx| {
             stats::stats(cx).update(cx, |s, cx| s.cancel_speed_test(cx));
@@ -947,10 +1289,10 @@ fn storage_chart(s: &Snapshot, hover: Option<f32>, view: WeakEntity<Dashboard>) 
         .relative()
         .w_full()
         .h(px(CHART_H))
-        .rounded(px(10.))
+        .rounded(radius(ui::R_MD))
         .border_1()
-        .border_color(rgb(0x1c1c1c))
-        .bg(rgb(0x0c0c0c))
+        .border_color(control_border())
+        .bg(chart())
         .overflow_hidden();
 
     let Some((first, last)) = s.disk_range() else {
@@ -960,7 +1302,7 @@ fn storage_chart(s: &Snapshot, hover: Option<f32>, view: WeakEntity<Dashboard>) 
                 .flex()
                 .items_center()
                 .justify_center()
-                .child(ui::ui_text(14.5, fg3()).child("Collecting history…")),
+                .child(ui::empty_state("chart-line", "Collecting history", "Used space is recorded every 15 minutes; the chart appears after the second sample.")),
         );
     };
 
@@ -1016,22 +1358,14 @@ fn storage_chart(s: &Snapshot, hover: Option<f32>, view: WeakEntity<Dashboard>) 
             let mut x = 0.0;
             let mut i = 0;
             while x < bw {
-                let c = if i % 4 == 0 {
-                    rgb(0x1a1a1a)
-                } else {
-                    rgb(0x141414)
-                };
+                let c = if i % 4 == 0 { grid_strong() } else { grid() };
                 window.paint_quad(fill(Bounds::new(at((x, 0.)), size(px(1.), px(bh))), c));
                 x += 13.5;
                 i += 1;
             }
             let (mut y, mut i) = (0.0, 0);
             while y < bh {
-                let c = if i % 4 == 0 {
-                    rgb(0x1a1a1a)
-                } else {
-                    rgb(0x141414)
-                };
+                let c = if i % 4 == 0 { grid_strong() } else { grid() };
                 window.paint_quad(fill(Bounds::new(at((0., y)), size(px(bw), px(1.))), c));
                 y += 13.5;
                 i += 1;
@@ -1045,15 +1379,15 @@ fn storage_chart(s: &Snapshot, hover: Option<f32>, view: WeakEntity<Dashboard>) 
             if let Some((hx, _)) = hover_pt {
                 window.paint_quad(fill(
                     Bounds::new(at((hx - 0.5, 0.)), size(px(1.), px(bh))),
-                    rgb(0x3a3a3a),
+                    hairline(),
                 ));
             }
             // Guides at the first and last values.
             if let Some(p) = line((x0, y0), (bw - 10., y0), &[px(2.), px(4.)], 1.) {
-                window.paint_path(p, rgb(0x555555));
+                window.paint_path(p, guide());
             }
             if let Some(p) = line((PAD_X + 20., y1), (x1, y1), &[px(2.), px(4.)], 1.) {
-                window.paint_path(p, rgb(0x555555));
+                window.paint_path(p, guide());
             }
             if let Some(p) = line((x0, y0), (x1, y1), &[px(4.), px(4.)], 1.3) {
                 window.paint_path(p, caution().opacity(0.85));
@@ -1067,7 +1401,7 @@ fn storage_chart(s: &Snapshot, hover: Option<f32>, view: WeakEntity<Dashboard>) 
                 window.paint_path(p, ok());
             }
             for (cx, cy) in [(x0, y0), (x1, y1)].into_iter().chain(hover_pt) {
-                for (r, c) in [(5.5, ok()), (3.5, rgb(0x0c0c0c).into())] {
+                for (r, c) in [(5.5, ok()), (3.5, chart())] {
                     window.paint_quad(
                         fill(
                             Bounds::new(at((cx - r, cy - r)), size(px(2. * r), px(2. * r))),
@@ -1082,7 +1416,7 @@ fn storage_chart(s: &Snapshot, hover: Option<f32>, view: WeakEntity<Dashboard>) 
     .absolute()
     .inset_0();
 
-    let label = |s: String| ui::mono(12., rgb(0x8a8a8a).into()).absolute().child(s);
+    let label = |s: String| ui::mono(ui::text::MICRO, fg2()).absolute().child(s);
     // While hovering, the tooltip replaces the end labels it would collide with.
     let tooltip = hovered.map(|(sample, (hx, hy))| {
         const TIP_W: f32 = 150.;
@@ -1101,12 +1435,12 @@ fn storage_chart(s: &Snapshot, hover: Option<f32>, view: WeakEntity<Dashboard>) 
             .top(px(top))
             .items_center()
             .py(px(5.))
-            .rounded(px(7.))
+            .rounded(radius(ui::R_SM))
             .border_1()
-            .border_color(rgb(0x2e2e2e))
-            .bg(rgb(0x1a1a1a))
-            .child(ui::mono(12.5, fg()).child(format::bytes(sample.used)))
-            .child(ui::mono(11., fg3()).child(when))
+            .border_color(raised_border())
+            .bg(popover())
+            .child(ui::mono(ui::text::CAPTION, fg()).child(format::bytes(sample.used)))
+            .child(ui::mono(ui::text::MICRO, fg3()).child(when))
     });
     frame
         .child(plot)
@@ -1135,13 +1469,13 @@ fn storage_chart(s: &Snapshot, hover: Option<f32>, view: WeakEntity<Dashboard>) 
                 .bottom(px(12.))
                 .justify_between()
                 .font_family(crate::theme::MONO_FONT)
-                .text_size(px(13.))
-                .text_color(rgb(0x6a6a6a))
+                .text_size(px(ui::text::MICRO))
+                .text_color(fg3())
                 .child(format!("{} ago", format::span(span)))
                 .child(
                     h_flex()
                         .gap(px(6.))
-                        .text_color(rgb(0x8a8a8a))
+                        .text_color(fg2())
                         .child(div().text_color(caution()).child("- -"))
                         .child(rate),
                 )
@@ -1153,18 +1487,30 @@ impl Render for Dashboard {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let s = Snapshot::read(self.stats.read(cx));
         let body = match self.tab {
-            Tab::Overview => self.overview(&s),
+            Tab::Overview => self.overview(&s, cx),
             Tab::Network => self.network(&s, cx),
             Tab::Storage => self.storage(&s, cx),
             Tab::Awake => awake::tab(&s, cx),
             Tab::Fans => fans::tab(self, &s, cx),
             Tab::Settings => self.settings(&s, cx),
         };
-        let card = ui::card(
-            self.header(&s, cx),
-            v_flex().gap(px(22.)).child(self.tabs(cx)).child(body),
-        )
-        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation());
+        let body = div()
+            // A fresh id per tab, so each starts scrolled to the top.
+            .id(SharedString::from(format!("tab-body-{}", self.tab.label())))
+            .max_h(px(self.body_max_h))
+            .overflow_y_scroll()
+            .child(div().p(px(20.)).child(body));
+        let card = ui::card(self.header(&s), self.tabs(&s, cx), body)
+            .relative()
+            .children(self.toast_view(cx).map(|t| {
+                div()
+                    .absolute()
+                    .left(px(16.))
+                    .right(px(16.))
+                    .bottom(px(18.))
+                    .child(t)
+            }))
+            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation());
 
         // The window is taller than most tabs; a click on the transparent
         // part below the card closes the dashboard like a click elsewhere.
@@ -1174,8 +1520,35 @@ impl Render for Dashboard {
             .flex_col()
             .items_center()
             .px(px(ui::SHADOW))
+            .track_focus(&self.focus)
+            .key_context(KEY_CONTEXT)
+            .on_action(cx.listener(|_, _: &Dismiss, window, cx| dismiss(window, cx)))
+            .on_action(cx.listener(|this, _: &NextTab, _, cx| this.set_tab(this.tab.next(), cx)))
+            .on_action(cx.listener(|this, _: &PrevTab, _, cx| this.set_tab(this.tab.prev(), cx)))
+            .on_action(cx.listener(|this, _: &ShowOverview, _, cx| this.set_tab(Tab::Overview, cx)))
+            .on_action(cx.listener(|this, _: &ShowNetwork, _, cx| this.set_tab(Tab::Network, cx)))
+            .on_action(cx.listener(|this, _: &ShowStorage, _, cx| this.set_tab(Tab::Storage, cx)))
+            .on_action(cx.listener(|this, _: &ShowAwake, _, cx| this.set_tab(Tab::Awake, cx)))
+            .on_action(cx.listener(|this, _: &ShowFans, _, cx| this.set_tab(Tab::Fans, cx)))
+            .on_action(cx.listener(|this, _: &ShowSettings, _, cx| this.set_tab(Tab::Settings, cx)))
+            .on_action(|_: &OpenWorkbench, _, cx| crate::workbench::open(cx))
+            .on_action(|_: &QuitApp, _, cx| cx.quit())
             .on_mouse_down(MouseButton::Left, |_, window, cx| dismiss(window, cx))
             .child(card)
+    }
+}
+
+/// A dot on a tab's icon when something there needs a look.
+fn tab_badge(tab: Tab, s: &Snapshot) -> Option<Hsla> {
+    match tab {
+        Tab::Fans => fans::badge(s),
+        Tab::Storage => s.disk.and_then(|d| {
+            (s.settings.storage_level(d.used_fraction())
+                == utilify_core::settings::StorageLevel::Danger)
+                .then(danger)
+        }),
+        Tab::Settings => status::settings_badge(s),
+        _ => None,
     }
 }
 
@@ -1211,6 +1584,11 @@ fn dismiss(window: &mut Window, cx: &mut App) {
     s.handle = None;
     s.closed_at = Some(Instant::now());
     window.remove_window();
+}
+
+/// Open the Network tab's speed test section unfolded (debug launches).
+pub fn unfold_speed_test(cx: &mut App) {
+    state(cx).speed_test_open = true;
 }
 
 /// The tab the dashboard opens on next.
@@ -1262,6 +1640,11 @@ pub fn open(cx: &mut App) {
         .and_then(|p| p.display_id)
         .map(|id| DisplayId::new(id as u64))
         .filter(|id| cx.find_display(*id).is_some());
+    // Fit the screen: the window is never taller than the room under the
+    // menu bar, and the tab's content scrolls inside what's left.
+    let height = placement
+        .map_or(HEIGHT, |p| (p.room as f32 / ui::SCALE).min(HEIGHT));
+    let body_max_h = height - CHROME_H;
     let origin = placement
         // Screen coordinates, so not scaled.
         .map(|p| point(gpui_kit::px(p.x as f32), gpui_kit::px(p.y as f32)))
@@ -1269,7 +1652,7 @@ pub fn open(cx: &mut App) {
     let options = WindowOptions {
         window_bounds: Some(WindowBounds::Windowed(Bounds {
             origin,
-            size: size(px(WIDTH), px(HEIGHT)),
+            size: size(px(WIDTH), px(height)),
         })),
         display_id,
         titlebar: None,
@@ -1287,7 +1670,7 @@ pub fn open(cx: &mut App) {
     let mut native = None;
     match cx.open_window(options, |window, cx| {
         native = native_window(window);
-        cx.new(|cx| Dashboard::new(stats, window, cx))
+        cx.new(|cx| Dashboard::new(stats, body_max_h, window, cx))
     }) {
         Ok(handle) => {
             state(cx).handle = Some(handle);

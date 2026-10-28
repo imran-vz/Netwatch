@@ -83,18 +83,10 @@ pub fn default_path() -> Option<PathBuf> {
     )
 }
 
-/// Load the history; a missing or unreadable file gives an empty one.
+/// Load the history; a missing or unreadable file gives an empty one. One
+/// that doesn't parse is moved aside first ([`crate::quarantine`]).
 pub fn load(path: &Path) -> DiskHistory {
-    match std::fs::read(path) {
-        Ok(bytes) => serde_json::from_slice(&bytes).unwrap_or_else(|e| {
-            log::warn!(
-                "Ignoring unreadable disk history at {}: {e}",
-                path.display()
-            );
-            DiskHistory::default()
-        }),
-        Err(_) => DiskHistory::default(),
-    }
+    crate::load_json(path, "disk history").unwrap_or_default()
 }
 
 /// Save atomically.
@@ -182,6 +174,9 @@ mod tests {
         assert_eq!(load(&path), h);
         std::fs::write(&path, "garbage").unwrap();
         assert_eq!(load(&path), DiskHistory::default());
+        assert!(!path.exists());
+        let aside = crate::settings::tests::only_corrupt_copy(path.parent().unwrap());
+        assert_eq!(std::fs::read_to_string(aside).unwrap(), "garbage");
     }
 
     #[test]

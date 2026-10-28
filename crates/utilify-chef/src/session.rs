@@ -4,7 +4,7 @@
 
 use crate::Recipe;
 use serde::{Deserialize, Serialize};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 /// Inputs longer than this aren't saved; reopening starts empty instead.
 pub const MAX_SAVED_INPUT: usize = 256 * 1024;
@@ -81,12 +81,57 @@ impl Session {
     }
 }
 
-/// A missing or unreadable file gives the defaults.
+/// A missing or unreadable file gives the defaults. One that exists but
+/// doesn't parse is first renamed to `<name>.corrupt-<unix secs>.json`
+/// beside it, so the next save doesn't overwrite it (see
+/// [`take_recovered_files`]).
 pub fn load(path: &Path) -> Session {
-    std::fs::read(path)
-        .ok()
-        .and_then(|b| serde_json::from_slice(&b).ok())
-        .unwrap_or_default()
+    let Ok(bytes) = std::fs::read(path) else {
+        return Session::default();
+    };
+    serde_json::from_slice(&bytes).unwrap_or_else(|e| {
+        // No logger in this crate: stderr ends up in the app's log.
+        eprintln!(
+            "Ignoring unreadable workbench session at {}: {e}",
+            path.display()
+        );
+        quarantine(path);
+        Session::default()
+    })
+}
+
+/// Sessions moved aside by [`load`] since the last [`take_recovered_files`].
+static RECOVERED: std::sync::Mutex<Vec<PathBuf>> = std::sync::Mutex::new(Vec::new());
+
+/// The corrupt session files moved aside since the last call (their new
+/// paths), so the app can tell the user once. Empties the list.
+pub fn take_recovered_files() -> Vec<PathBuf> {
+    std::mem::take(&mut *RECOVERED.lock().unwrap_or_else(|e| e.into_inner()))
+}
+
+/// `workbench.json` becomes `workbench.corrupt-<unix_secs>.json`.
+fn corrupt_path(path: &Path, unix_secs: u64) -> PathBuf {
+    let stem = path
+        .file_stem()
+        .map_or_else(|| "session".into(), |s| s.to_string_lossy());
+    path.with_file_name(format!("{stem}.corrupt-{unix_secs}.json"))
+}
+
+/// Renames `path` aside, never over an earlier corrupt copy.
+fn quarantine(path: &Path) {
+    let secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs());
+    let mut to = corrupt_path(path, secs);
+    let mut n = 1;
+    while to.exists() {
+        to = corrupt_path(path, secs).with_extension(format!("{n}.json"));
+        n += 1;
+    }
+    match std::fs::rename(path, &to) {
+        Ok(()) => RECOVERED.lock().unwrap_or_else(|e| e.into_inner()).push(to),
+        Err(e) => eprintln!("Moving aside unreadable {} failed: {e}", path.display()),
+    }
 }
 
 /// Each save writes its own temporary file and renames it into place, so
@@ -129,6 +174,28 @@ mod tests {
         assert_eq!(back, s);
         assert_eq!(back.recipe().steps.len(), 1);
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn corrupt_file_is_moved_aside() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("workbench.json");
+        std::fs::write(&path, "{broken").unwrap();
+        assert_eq!(load(&path), Session::default());
+        assert!(!path.exists());
+        let aside: Vec<PathBuf> = std::fs::read_dir(dir.path())
+            .unwrap()
+            .map(|e| e.unwrap().path())
+            .collect();
+        assert_eq!(aside.len(), 1);
+        let name = aside[0].file_name().unwrap().to_string_lossy().into_owned();
+        assert!(
+            name.starts_with("workbench.corrupt-") && name.ends_with(".json"),
+            "{name}"
+        );
+        assert_eq!(std::fs::read_to_string(&aside[0]).unwrap(), "{broken");
+        assert!(take_recovered_files().contains(&aside[0]));
+        assert!(!take_recovered_files().contains(&aside[0]), "reported once");
     }
 
     #[test]

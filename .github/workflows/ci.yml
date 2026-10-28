@@ -23,7 +23,7 @@ env:
 jobs:
   check:
     timeout-minutes: 60
-    runs-on: ${{ vars.SAND_RUNNERS_ENABLED == 'true' && (github.event_name != 'pull_request' || (github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.user.login != 'dependabot[bot]')) && github.actor != 'dependabot[bot]' && fromJSON('["self-hosted","macOS","ARM64","netwatch","sand"]') || 'macos-latest' }}
+    runs-on: ${{ vars.SAND_RUNNERS_ENABLED == 'true' && (github.event_name != 'pull_request' || (github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.user.login != 'dependabot[bot]')) && github.actor != 'dependabot[bot]' && fromJSON('["self-hosted","macOS","ARM64","utilify","sand"]') || 'macos-latest' }}
     steps:
       - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable

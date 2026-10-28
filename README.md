@@ -1,97 +1,201 @@
 # Utilify
 
-macOS menu-bar utilities: a monitor for network activity and storage, keep
-awake, fan control and temperatures, and a data workbench that ports [CyberChef](https://github.com/gchq/CyberChef)'s
-operations to native Rust. (Utilify was called Netwatch; on first launch it
-moves the old `dev.netwatch.app` data directory to `dev.utilify.app`.)
+Utilify is a set of macOS menu-bar utilities. It shows network activity and
+storage, keeps the Mac awake, controls the fans and reads temperatures, and
+has a data workbench that ports [CyberChef](https://github.com/gchq/CyberChef)'s
+operations to native Rust.
 
-- **Menu-bar icon**, redrawn every tick (0.5 / 1 / 2 / 5 s): current download ▼
-  and upload ▲ rates (`9.2MB/s`, fixed width so the item doesn't jitter), a
-  bar graph of the last 24 download samples, and a storage bar under it. In the bar, the translucent
-  track is total capacity, the solid fill is used space, and the rest is free.
-  The icon is an SVG rendered with resvg and shown as a template image, so it
-  follows the light/dark menu bar. It can also show a temperature (any
-  sensor; CPU Core Average by default) and the fastest fan's speed, as
-  `80°C` over `5775rpm`, alongside the rates or instead of them (Settings
-  tab, or the menu's "Show Temperature/Fan Speed in Menu Bar").
-- **Left click** opens a dashboard in six tabs: **Overview** (the 2-minute
-  rate graph, current rates, storage, keep awake); **Network** (link capacity and use,
-  session totals, and an on-demand speed test with latency idle vs under
-  load); **Storage** (used space over the last 30 days); **Awake** (keep-awake
-  sessions); **Fans** (fan control and temperature sensors, below);
-  **Settings** (refresh interval, rates, temperature and fan speed in the
-  menu bar, storage colour thresholds, Quit).
-- **Storage colours**: the storage bar is green below 50% used, yellow from
-  50%, red from 80% (both adjustable in Settings). Crossing into red posts a
-  notification (on by default; only from the bundled app, as macOS needs a
-  bundle identity). It fires once per crossing and re-arms after usage
-  drops 2 points below the red line; starting up already in the red doesn't
-  notify. The look comes from
-  `design/dashboard-mock.html`.
-- **Keep awake**, with the options from
-  [Amphetamine](https://apps.apple.com/app/amphetamine/id937984704)'s menu,
-  under the menu's Keep Awake submenu and the dashboard's Awake tab:
-  - Start a session: Indefinitely (⌘I), Minutes (5–45), Hours (1–12), a
-    custom length or "until 18:30" (Awake tab), while an app runs (pick from
-    the running apps; ends when it quits), while a file downloads (any
-    `.download`/`.crdownload`/`.part` in Downloads; ends a minute after the
-    last one goes; ⌘F), or while the network is busy (ends after 2 minutes
-    under 50 KB/s). End Current Session is ⌘X.
-  - Session details: time remaining and how it started (manual or at launch).
-  - Options: allow display sleep, allow system sleep when the display is
-    closed (blocking it only works on AC power; macOS ignores it on battery),
-    and allow the screen saver after N minutes without input (blocking display
-    sleep also blocks the screen saver, so Utilify starts it).
-  - Quick settings: start a session at launch, notify when a session ends,
-    launch Utilify at login (macOS 13+, bundled app only).
-  - While a session runs, a pill shows left of the menu-bar icon. The total
-    time kept awake is stored across launches (`awake.json`). Sessions hold
-    IOKit power assertions, which macOS drops if Utilify quits or crashes;
-    check them with `pmset -g assertions`.
-- **Fans**, like [Macs Fan Control](https://crystalidea.com/macs-fan-control),
-  in the dashboard's Fans tab and the menu's Fans submenu:
-  - Each fan ("Left side"/"Right side" on two-fan Macs, else "Fan N") with
-    its current, minimum and maximum speed, and its control: **Auto** (the
-    system's own), **Constant** (a speed in 100 rpm steps), or **Sensor**
-    (pick a sensor and two temperatures: the fan stays at its minimum up to
-    the first and reaches its maximum at the second, linear between). Curves
-    only lower the fan once the sensor is 2 °C below the reading that set the
-    speed, and move it at most 1000 rpm/s up and 250 rpm/s down, so it
-    doesn't hunt. A curve whose sensor disappears falls back to automatic.
-  - Presets: **Automatic** (every fan automatic), **Full blast** (every fan
-    at its maximum), and your own: Save the current controls under a name,
-    rename (pencil) or delete them. Editing a fan inside a preset edits the
-    preset; otherwise the edit becomes the "Custom" set. The menu lists the
-    fans with their control and the presets with a check on the active one,
-    plus Show Fans…. Kept in `<Application Support>/dev.utilify.app/fans.json`.
-  - Every temperature sensor, grouped (CPU, GPU, SoC, battery, storage,
-    ...), refreshed every 2 s.
-  - Setting speeds needs the fan helper (see Install). Without it, or for a
-    non-admin user, the tab shows a banner with what to do, and the controls
-    stay disabled; speeds and temperatures still show. It also warns when
-    another tool (e.g. Macs Fan Control) holds the fans, and shows errors the
-    helper reports. Quitting Utilify, or choosing Automatic, sends every fan
-    back to automatic; if Utilify crashes, the helper does it when the
-    connection drops. Intel Macs are read-only.
-- **Workbench** (⌘B in the menu, or the chef's hat in the dashboard header)
-  opens a full window in CyberChef's layout: operations on the left (search,
-  favourites, CyberChef's categories), the recipe in the middle, input over
-  output on the right. Click or drag operations into the recipe; each step can
-  be disabled, given a breakpoint (Step runs on from it), removed or dragged
-  into place. Auto bake reruns the recipe on every change, on a background
-  thread; ⌘↩ bakes by hand. Input is typed text or a file (Open file, or drop
-  one); output copies, saves, or becomes the next input. Paste takes a recipe
-  as CyberChef JSON, its `Op_Name(args)` chef format or a CyberChef URL (with
-  its input); Copy gives chef format. The recipe, input (up to 256 KB), auto
-  bake and favourites are kept in `<Application Support>/dev.utilify.app/workbench.json`.
-  So far CyberChef's "Data format" category is ported; the list shows the
-  rest as "soon". The codecs come from maintained libraries and the
-  utilify-codecs crates (see `crates/utilify-chef/DEPENDENCIES.md`).
-  While the window is open Utilify shows in the Dock.
-- **Right click** opens the menu: Open Dashboard, Open Workbench, Keep Awake,
-  Fans, the refresh interval, "Show Speeds / Temperature / Fan Speed in Menu
-  Bar" toggles, and Quit. Hovering the item
-  shows the current rates, free space and any keep-awake session.
+## The menu-bar icon
+
+The icon redraws every tick (0.5, 1, 2 or 5 s). It shows the current
+download ▼ and upload ▲ rates (`9.2MB/s`, fixed width so the item doesn't
+jitter), a bar graph of the last 24 download samples, and a storage bar under
+it. In the storage bar, the translucent track is the disk's capacity and the
+solid fill is used space.
+
+It can also show a temperature from any sensor (CPU Core Average by default)
+and the fastest fan's speed, as `80°C` over `5775rpm`, next to the rates or
+instead of them. Turn these on in Settings or from the menu's "Show
+Temperature/Fan Speed in Menu Bar".
+
+The icon is an SVG rendered with resvg and shown as a template image, so it
+follows the light or dark menu bar.
+
+Left click opens the dashboard. Right click opens the menu: Open Dashboard,
+Open Workbench, Keep Awake, Fans, the refresh interval, the "Show Speeds /
+Temperature / Fan Speed in Menu Bar" toggles, and Quit. Hovering the item
+shows the current rates, free space and any keep-awake session.
+
+## The dashboard
+
+The dashboard has six tabs:
+
+- Overview: the 2-minute rate graph, current rates, storage and keep awake.
+- Network: link capacity and use, session totals, and an on-demand speed test
+  that measures latency idle and under load.
+- Storage: used space over the last 30 days.
+- Awake: keep-awake sessions.
+- Fans: fan control and temperature sensors.
+- Settings: what the menu bar shows, storage colours, notifications, the
+  health checks, Reset and Quit.
+
+It follows the system's light or dark appearance. ⌘1 to ⌘6 pick a tab,
+⌃Tab and ⌃⇧Tab step through them, ⌘, opens Settings, ⌘B opens the workbench,
+Esc or ⌘W closes the dashboard and ⌘Q quits. Icon-only buttons have tooltips
+that show their shortcut.
+
+### Storage colours
+
+The storage bar is green below 50% used, yellow from 50% and red from 80%.
+Both lines can be changed in Settings. Crossing into red posts a
+notification, once per crossing. It re-arms after usage drops 2 points below
+the red line, and starting up already in the red doesn't notify.
+
+### Keep awake
+
+Keep awake has the options from
+[Amphetamine](https://apps.apple.com/app/amphetamine/id937984704)'s menu. You'll
+find them in the menu's Keep Awake submenu and on the Awake tab.
+
+You can start a session:
+
+- indefinitely (⌘I)
+- for 5 to 45 minutes or 1 to 12 hours, or a custom length or "until 18:30"
+  from the Awake tab
+- while an app runs (pick one of the running apps; the session ends when it
+  quits)
+- while a file downloads: any `.download`, `.crdownload` or `.part` file in
+  Downloads (⌘F). It ends a minute after the last one goes.
+- while the network is busy. It ends after 2 minutes under 50 KB/s.
+
+End Current Session is ⌘X. The Awake tab shows the time remaining and whether
+the session started by hand or at launch.
+
+Session options let the display sleep, let the Mac sleep when the lid
+closes, and allow the screen saver after N minutes without input. Blocking
+lid-close sleep only works on AC power, because macOS ignores it on battery.
+Blocking display sleep also blocks the screen saver, so Utilify starts the
+screen saver itself.
+
+Quick settings start a session at launch, notify when a session ends, and
+launch Utilify at login (macOS 13 or later, bundled app only).
+
+While a session runs, a pill shows left of the menu-bar icon. The total time
+kept awake is stored across launches in `awake.json`. Sessions hold IOKit
+power assertions, which macOS drops if Utilify quits or crashes. Check them
+with `pmset -g assertions`.
+
+### Fans
+
+Fan control works like [Macs Fan Control](https://crystalidea.com/macs-fan-control),
+on the Fans tab and in the menu's Fans submenu.
+
+Each fan is listed ("Left side" and "Right side" on two-fan Macs, otherwise
+"Fan N") with its current, minimum and maximum speed and how it's driven:
+
+- Auto: the system's own control.
+- Constant: a speed you set, in 100 rpm steps.
+- Sensor: pick a sensor and two temperatures. The fan stays at its minimum up
+  to the first, reaches its maximum at the second, and moves linearly in
+  between.
+
+A curve only lowers the fan once the sensor is 2 °C below the reading that
+set the speed, and changes speed by at most 1000 rpm/s up and 250 rpm/s down,
+so it doesn't hunt. If a curve's sensor disappears, that fan goes back to
+automatic.
+
+There are two built-in presets, Automatic (every fan on automatic) and Full
+blast (every fan at its maximum). Save the current controls under a name to
+make your own. Rename one with the pencil, or delete it (the toast offers
+Undo). Editing a
+fan inside a preset edits the preset. Otherwise the edit becomes the "Custom"
+set. The menu lists the fans with their control, the presets with a check on
+the active one, and Show Fans…. Presets are kept in
+`<Application Support>/dev.utilify.app/fans.json`.
+
+The tab also lists every temperature sensor by group (CPU, GPU, SoC, battery,
+storage and so on), refreshed every 2 s. It flags the readings as stale if
+they stop arriving.
+
+Setting speeds needs the fan helper (see Install). Without it, or for a
+non-admin user, the tab shows a banner saying what to do, with the commands
+ready to copy, and the controls stay disabled. Speeds and temperatures still
+show. The tab also warns when another tool, such as Macs Fan Control, holds
+the fans, when fans run high on battery, and when the helper reports an
+error. Quitting Utilify or choosing Automatic puts every fan back on
+automatic. If Utilify crashes, the helper does it when the connection drops.
+On Intel Macs the fans are read-only.
+
+### Notifications
+
+Every notification has its own switch in Settings › Notifications, under a
+master switch. Clicking one opens the tab it's about. Utilify can tell you
+when:
+
+- the fans are held at full speed on battery. It waits 10 minutes, then
+  reminds you hourly while it lasts, with Set to Automatic and Snooze 1 Hour.
+- the battery runs low during a keep-awake session, at 20% (adjustable) and
+  again at half that, capped at 10%. It offers End Session.
+- the Mac switches to battery while a session blocks lid-close sleep, which
+  macOS ignores on battery.
+- a timed session will end in 5 minutes, with Add 30 Minutes. Off by
+  default.
+- macOS is throttling the Mac to cool it down.
+- the overheating guard takes the fans back.
+- the fan helper stops answering while you have the fans set.
+- another app takes the fans.
+- the network has been offline for a minute. Off by default.
+- a speed test finishes while the dashboard is closed.
+- storage crosses into red.
+- a keep-awake session ends.
+
+Each condition has to last a short while before it posts, and posts once per
+occurrence (hourly for fans on battery). Its notification is taken back when
+the condition clears, and quitting takes back the rest. The rules live in
+`utilify-core/src/alerts.rs`. Notifications only work from the bundled app,
+because macOS needs a bundle identity to deliver them.
+
+### Health checks
+
+Shortly after launch and every 15 minutes, Utilify checks that:
+
+- its data folder is writable and its saved files parse
+- the disk and the network can be read
+- `networkQuality` is there
+- the fan helper answers and fan readings keep coming
+
+The results are in Settings › Health, which also has a Check now button. A
+failing check puts a banner on Overview and a dot on the Settings tab.
+
+When a save fails, a banner says why and Utilify retries every 30 s. When a
+saved file doesn't parse, Utilify moves it aside as
+`<name>.corrupt-<time>.json` instead of overwriting it, and says so once.
+
+## The workbench
+
+Open it with ⌘B in the menu or the chef's hat in the dashboard header. It's a
+full window in CyberChef's layout: operations on the left (search,
+favourites, CyberChef's categories), the recipe in the middle, and input over
+output on the right.
+
+Click or drag operations into the recipe. Each step can be disabled, given a
+breakpoint (Step runs on from it), removed, or dragged into place. When a step
+fails, the output shows which one, with buttons to show it or disable it.
+
+Auto bake reruns the recipe on a background thread after every change, and
+⌘↩ bakes by hand. Input is typed text or a file: use Open file (⌘O) or drop
+one on the input. Output can be copied, saved, or used as the next input.
+⌘F jumps to the operation search.
+
+Paste takes a recipe as CyberChef JSON, its `Op_Name(args)` chef format, or a
+CyberChef URL (with its input). Copy gives chef format. The recipe, the input
+(up to 256 KB), auto bake and favourites are kept in
+`<Application Support>/dev.utilify.app/workbench.json`.
+
+So far CyberChef's "Data format" category is ported, and the list shows the
+rest as "soon". The codecs come from maintained libraries and the
+utilify-codecs crates (see `crates/utilify-chef/DEPENDENCIES.md`). While the
+window is open, Utilify shows in the Dock.
 
 ## Install
 
@@ -108,7 +212,7 @@ it in `/Applications` (or `~/Applications` if that isn't writable; override
 with `UTILIFY_INSTALL_DIR`), and launches it (skip that with
 `UTILIFY_NO_LAUNCH=1`).
 
-On Apple Silicon it also installs the **fan helper**, which lets Utilify set
+On Apple Silicon it also installs the fan helper, which lets Utilify set
 fan speeds. Reading fans and temperatures works for any user, but writing to
 the SMC (the chip that runs the fans) needs root, so `utilify-fanhelper` runs
 as a root LaunchDaemon: `/Library/PrivilegedHelperTools/dev.utilify.fanhelper`,
@@ -130,13 +234,20 @@ cargo run -p utilify-app            # debug, unbundled
 cargo packager --release -p utilify-app --formats app   # Utilify.app (LSUIElement, no Dock icon)
 ```
 
-Debug builds open the workbench at launch when `UTILIFY_DEV_OPEN_WORKBENCH=1`
-is set, and the dashboard when `UTILIFY_DEV_OPEN_DASHBOARD=1`
-is set; add `UTILIFY_DEV_TAB=network` (or `storage`, `awake`, `fans`, `settings`) to pick the
-tab, `UTILIFY_DEV_SPEED_TEST=1` to start a speed test, `UTILIFY_DEV_AWAKE=1` to
-start a 30-minute keep-awake session, and
-`UTILIFY_DEV_PIN=1` to keep it open when focus moves away.
-`UTILIFY_DEV_QUIT_AFTER=10` quits through the normal path after 10 s.
+Debug builds read a few environment variables:
+
+- `UTILIFY_DEV_OPEN_WORKBENCH=1` opens the workbench at launch.
+- `UTILIFY_DEV_OPEN_DASHBOARD=1` opens the dashboard at launch. With it,
+  `UTILIFY_DEV_TAB=network` (or `storage`, `awake`, `fans`, `settings`) picks
+  the tab, `UTILIFY_DEV_SPEED_TEST=1` starts a speed test (with its section unfolded),
+  `UTILIFY_DEV_AWAKE=1` starts a 30-minute keep-awake session, and
+  `UTILIFY_DEV_PIN=1` keeps it open when focus moves away.
+- `UTILIFY_DEV_APPEARANCE=light` (or `dark`) overrides the system appearance,
+  for checking both palettes.
+- `UTILIFY_DEV_SCREEN=main` opens the dashboard on the main display, whatever
+  screen the pointer is on. Handy for Retina screenshots.
+- `UTILIFY_DEV_QUIT_AFTER=10` quits through the normal path after 10 s.
+
 To try fan control without touching the real fans, run the helper with its
 in-memory SMC and point a debug build at it:
 
@@ -179,6 +290,9 @@ crates/
 │    fans/        client.rs (the helper's socket), controller.rs (one tick:
 │                 targets, only-changed SETs, PINGs, AUTO ALL), service.rs
 │                 (the 2 s background thread)
+│    power.rs     AC or battery, charge, Low Power Mode (IOKit power sources)
+│    alerts.rs    the notification rules: debounce, repeats, snooze, retract
+│    health.rs    the periodic self-checks
 │    monitor.rs   one tick: rates, rolling history, session totals, cached disk
 │    icon.rs      menu-bar SVG + resvg rasterizer
 │    format.rs, history.rs, settings.rs (<Application Support>/dev.utilify.app/settings.json)
@@ -199,12 +313,15 @@ crates/
 └─ utilify-app/    binary `utilify`
      lib.rs       startup (Accessory policy), sampler timer, tray event loop
      tray.rs      status item, menu, icon updates (main thread only)
-     dashboard.rs GPUI popover: the six tabs and window open/close
+     dashboard.rs the GPUI popover: the six tabs, shortcuts, toasts, and
+                  opening and closing the window
      dashboard/awake.rs  the Awake tab and Overview's keep-awake control
      dashboard/fans.rs   the Fans tab: banners, presets, fans, sensors
+     dashboard/status.rs problem banners, the Notifications and Health sections
      system.rs    running apps (NSWorkspace) and launch at login (SMAppService)
-     ui.rs        the dashboard's dark palette and building blocks
-     placement.rs dashboard position under the clicked status item
+     ui.rs        the design system: light and dark colours, the type and
+                  corner scales, and the parts both windows are built from
+     placement.rs dashboard position and height under the clicked status item
      workbench.rs the workbench window: state, baking, persistence, header
      workbench/   operations list, recipe steps, input/output, widgets
 ```
@@ -227,9 +344,9 @@ for encodings, formats and crypto, with our code as the CyberChef adapter.
 
 ### Notes
 
-- **Link capacity** is the driver-reported `ifi_baudrate`. For Ethernet that's
+- Link capacity is the driver-reported `ifi_baudrate`. For Ethernet that's
   the negotiated speed. For Wi-Fi it's the current PHY rate, which moves with
-  signal quality. Usage = the busier direction ÷ capacity, since links are
-  full duplex.
+  signal quality. Usage is the busier direction divided by capacity, since
+  links are full duplex.
 - The "primary" interface is the active `enN` port that has carried the most
   traffic since boot.

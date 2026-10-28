@@ -22,6 +22,9 @@ pub struct Placement {
     pub x: f64,
     pub y: f64,
     pub display_id: Option<u32>,
+    /// Height from the window's top to the bottom of the visible area
+    /// (above the Dock), less a margin.
+    pub room: f64,
 }
 
 const MARGIN: f64 = 8.0;
@@ -34,6 +37,11 @@ pub fn place(cursor_x: f64, frame: CocoaRect, visible: CocoaRect, w: f64) -> (f6
     let max_x = (frame.w - w - MARGIN).max(MARGIN);
     let x = (cursor_x - frame.x - w / 2.0).clamp(MARGIN, max_x);
     (x, menu_bar.max(0.0) + GAP)
+}
+
+/// Usable height below the menu bar on a screen with this visible frame.
+pub fn room(visible: CocoaRect) -> f64 {
+    (visible.h - GAP - MARGIN).max(200.0)
 }
 
 /// Pick the screen containing `cursor` (Cocoa coordinates).
@@ -74,11 +82,26 @@ pub fn below_menu_bar(w: f64) -> Option<Placement> {
         })
         .collect();
     let (frame, visible, id) = *screen_for((cursor.x, cursor.y), &screens)?;
-    let (x, y) = place(cursor.x, frame, visible, w);
+    let mut cursor_x = cursor.x;
+    // Debug builds: UTILIFY_DEV_SCREEN=main opens it on the main display
+    // (top right), whatever screen the pointer is on. For screenshots.
+    #[cfg(debug_assertions)]
+    let (frame, visible, id) = match (
+        std::env::var("UTILIFY_DEV_SCREEN").as_deref(),
+        screens.first(),
+    ) {
+        (Ok("main"), Some(&(f, v, i))) => {
+            cursor_x = f.x + f.w - 200.0;
+            (f, v, i)
+        }
+        _ => (frame, visible, id),
+    };
+    let (x, y) = place(cursor_x, frame, visible, w);
     Some(Placement {
         x,
         y,
         display_id: id,
+        room: room(visible),
     })
 }
 
@@ -107,6 +130,11 @@ mod tests {
     #[test]
     fn centers_under_the_cursor_below_the_menu_bar() {
         assert_eq!(place(1000.0, MAIN, MAIN_VISIBLE, 340.0), (830.0, 43.0));
+    }
+
+    #[test]
+    fn room_is_the_visible_height_less_margins() {
+        assert_eq!(room(MAIN_VISIBLE), 875.0 - 14.0);
     }
 
     #[test]

@@ -4,7 +4,7 @@
 //! and every temperature sensor by group.
 
 use super::{Dashboard, text};
-use crate::ui::{self, color::*, px};
+use crate::ui::{self, Tone, color::*, px, radius};
 use gpui_kit::component::input::Input;
 use gpui_kit::component::{h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
@@ -13,6 +13,7 @@ use utilify_core::fans::client::{HELPER_PLIST, INSTALL_COMMAND};
 use utilify_core::fans::controller::{FanStatus, HelperStatus};
 use utilify_core::fans::service::FanSnapshot;
 use utilify_core::fans::{self, Active, Control, FanSettings};
+use utilify_core::power::PowerState;
 use utilify_core::sensors::{self, Sensor};
 
 /// Constant speeds move in steps of this many rpm.
@@ -23,9 +24,10 @@ const TEMP_MIN: f32 = 20.;
 const TEMP_MAX: f32 = 110.;
 /// Sensor names longer than this are cut short in the pickers.
 const PICKER_CHARS: usize = 24;
-/// The tab scrolls past this height, so the card fits the dashboard window
-/// (and the screen) with the sensor list below the fans.
-const BODY_H: f32 = 880.;
+/// Readings older than this many seconds are flagged as stale.
+const STALE_AFTER: u64 = 8;
+/// Sensors at or above this show in the caution colour.
+const HOT_C: f32 = 90.;
 
 /// What the tab shows, copied out of the model.
 pub(super) struct Snapshot {
@@ -72,155 +74,171 @@ fn rpm(v: f32) -> String {
     format!("{v:.0} rpm")
 }
 
-#[derive(Clone, Copy)]
-enum Tone {
-    Info,
-    Caution,
-    Danger,
-}
-
-/// A boxed note across the tab: an icon, a title, and lines under it.
-fn banner(tone: Tone, title: &str, lines: Vec<AnyElement>) -> Div {
-    let (color, icon) = match tone {
-        Tone::Info => (fg2(), "info"),
-        Tone::Caution => (caution(), "triangle-alert"),
-        Tone::Danger => (danger(), "circle-alert"),
-    };
-    h_flex()
-        .items_start()
-        .gap(px(12.))
-        .p(px(14.))
-        .rounded(px(12.))
-        .border_1()
-        .border_color(color.opacity(0.4))
-        .bg(color.opacity(0.08))
-        .child(div().pt(px(2.)).child(ui::icon(icon, 17., color)))
-        .child(
-            v_flex()
-                .flex_1()
-                .min_w_0()
-                .gap(px(6.))
-                .child(ui::ui_text(15.5, fg()).child(title.to_string()))
-                .children(lines),
-        )
-}
-
-fn note(s: impl Into<SharedString>) -> AnyElement {
-    ui::ui_text(14., fg2()).child(s.into()).into_any_element()
-}
-
-/// A command to copy into Terminal.
-fn command(s: &str) -> AnyElement {
-    ui::mono(13., fg())
-        .px(px(10.))
-        .py(px(6.))
-        .rounded(px(8.))
-        .bg(rgb(0x0c0c0c))
-        .border_1()
-        .border_color(card_border())
-        .child(s.to_string())
-        .into_any_element()
+/// A copyable command that confirms with a toast.
+fn command(cx: &mut Context<Dashboard>, id: &str, cmd: &str) -> AnyElement {
+    let view = cx.entity().downgrade();
+    ui::command(SharedString::from(id.to_string()), cmd, move |_, cx| {
+        let _ = view.update(cx, |d, cx| {
+            d.show_toast(Tone::Ok, "Copied. Paste it into Terminal.", None, cx)
+        });
+    })
 }
 
 /// Why fan control isn't available, what else is going on, and what to do.
-fn banners(s: &Snapshot) -> Vec<Div> {
+fn banners(s: &Snapshot, power: &PowerState, cx: &mut Context<Dashboard>) -> Vec<Div> {
     let f = &s.fans;
     let mut out = vec![];
     match &f.helper {
         HelperStatus::Ready => {}
-        HelperStatus::Unknown => out.push(banner(
+        HelperStatus::Unknown => out.push(ui::banner(
             Tone::Info,
             "Checking the fan helper…",
-            vec![note("Speeds and temperatures are shown either way.")],
+            vec![note("Speeds and temperatures show either way.")],
+            vec![],
         )),
-        HelperStatus::Unsupported => out.push(banner(
+        HelperStatus::Unsupported => out.push(ui::banner(
             Tone::Info,
             "Fan control needs an Apple Silicon Mac",
-            vec![note("Fan speeds are read-only on this Mac.")],
+            vec![note("On this Mac, fan speeds are read-only.")],
+            vec![],
         )),
-        HelperStatus::NotInstalled => out.push(banner(
+        HelperStatus::NotInstalled => out.push(ui::banner(
             Tone::Caution,
-            "Fan helper not installed",
+            "Install the fan helper to set speeds",
             vec![
                 note(
-                    "Setting fan speeds needs Utilify's small root helper. \
-                     Run the installer from the Utilify source folder; it asks \
-                     for your password once:",
+                    "Setting fan speeds needs Utilify's small root helper. Run the \
+                     installer from the Utilify source folder; it asks for your \
+                     password once.",
                 ),
-                command(INSTALL_COMMAND),
+                command(cx, "copy-install", INSTALL_COMMAND),
                 note("Until then, speeds and temperatures are read-only."),
             ],
+            vec![],
         )),
-        HelperStatus::NotRunning => out.push(banner(
+        HelperStatus::NotRunning => out.push(ui::banner(
             Tone::Caution,
-            "Fan helper not running",
+            "The fan helper isn't running",
             vec![
                 note("It's installed but not answering. Start it with:"),
-                command(&format!("sudo launchctl bootstrap system {HELPER_PLIST}")),
-                note(format!("or run {INSTALL_COMMAND} again.")),
+                command(
+                    cx,
+                    "copy-bootstrap",
+                    &format!("sudo launchctl bootstrap system {HELPER_PLIST}"),
+                ),
+                note(format!(
+                    "or run {INSTALL_COMMAND} again. Utilify checks again every few seconds."
+                )),
             ],
+            vec![],
         )),
-        HelperStatus::PermissionDenied => out.push(banner(
+        HelperStatus::PermissionDenied => out.push(ui::banner(
             Tone::Caution,
             "Fan control is for admin users",
             vec![note(
-                "The fan helper only takes requests from administrators of this Mac.",
+                "The fan helper only takes requests from administrators of this Mac. \
+                 Sign in as an admin, or ask one to make you one.",
             )],
+            vec![],
         )),
-        HelperStatus::Broken(e) => out.push(banner(
+        HelperStatus::Broken(e) => out.push(ui::banner(
             Tone::Danger,
-            "Lost the fan helper",
+            "Lost the connection to the fan helper",
             vec![
                 note(e.clone()),
-                note("Retrying; the fans are back on automatic."),
+                note("The fans are back on automatic. Reconnecting on its own…"),
             ],
+            vec![],
         )),
     }
     if let Some(o) = &f.overheat {
-        out.push(banner(
+        out.push(ui::banner(
             Tone::Danger,
             "Too hot: fans on automatic",
             vec![
                 note(format!("{} reached {:.0}°C.", o.sensor, o.celsius)),
                 note(format!(
-                    "The system is running the fans until it's below {:.0}°C, \
-                     then your settings come back.",
+                    "The system runs the fans until it's below {:.0}°C, then your \
+                     settings come back.",
                     fans::controller::GUARD_RELEASE_C
                 )),
             ],
+            vec![],
         ));
     }
     if f.taking_over {
-        out.push(banner(
+        out.push(ui::banner(
             Tone::Info,
             "Taking over the fans",
             vec![note(
-                "macOS hands the fans over in a few seconds, or up to twenty \
-                 right after it took them back. Your settings apply once it does.",
+                "macOS hands the fans over in a few seconds, or up to twenty right \
+                 after it took them back. Your settings apply once it does.",
             )],
+            vec![],
         ));
     }
     if f.foreign {
-        out.push(banner(
+        out.push(ui::banner(
             Tone::Caution,
             "Another app is controlling the fans",
             vec![note(
-                "A fan tool such as Macs Fan Control holds them in manual mode. \
-                 Quit it, or set it to automatic, before using fan control here.",
+                "A fan tool such as Macs Fan Control holds them in manual mode. Quit \
+                 it, or set it to automatic, before using fan control here.",
             )],
+            vec![],
         ));
     }
     if let Some(e) = &f.error {
-        out.push(banner(
+        out.push(ui::banner(
             Tone::Danger,
-            "The fan helper refused",
+            "The fan helper refused the change",
             vec![note(e.clone())],
+            vec![],
+        ));
+    }
+    if power.on_battery && forced_high(s) {
+        let pct = power
+            .percent
+            .map(|p| format!(" ({p}%)"))
+            .unwrap_or_default();
+        out.push(ui::banner(
+            Tone::Caution,
+            format!("Fans are running high on battery{pct}"),
+            vec![note(
+                "Full speed drains the battery noticeably faster. Utilify reminds you \
+                 every hour while it lasts.",
+            )],
+            vec![ui::banner_button("battery-fans-auto", "Set to Automatic").on_click(
+                |_, _, cx| crate::update_fan_settings(cx, |s, _| s.active = Active::Automatic),
+            )],
         ));
     }
     out
 }
 
-fn icon_action(id: impl Into<ElementId>, icon: &str) -> Stateful<Div> {
+/// Fans held at or near their maximum: the same rule the battery
+/// notification uses.
+fn forced_high(s: &Snapshot) -> bool {
+    utilify_core::alerts::FanInputs::from_snapshot(&s.fans, &s.settings.active).forced_high
+}
+
+/// A dot on the Fans tab: red when something's wrong, yellow for a heads-up.
+pub(super) fn badge(s: &super::Snapshot) -> Option<Hsla> {
+    let f = &s.fans;
+    if f.fans.overheat.is_some() || matches!(f.fans.helper, HelperStatus::Broken(_)) {
+        Some(danger())
+    } else if f.fans.foreign || (s.power.on_battery && forced_high(f)) {
+        Some(caution())
+    } else {
+        None
+    }
+}
+
+fn note(s: impl Into<SharedString>) -> AnyElement {
+    ui::note(s)
+}
+
+fn icon_action(id: impl Into<ElementId>, icon: &str, label: &str) -> Stateful<Div> {
     div()
         .id(id)
         .flex_none()
@@ -228,9 +246,10 @@ fn icon_action(id: impl Into<ElementId>, icon: &str) -> Stateful<Div> {
         .flex()
         .items_center()
         .justify_center()
-        .rounded(px(7.))
+        .rounded(radius(ui::R_SM))
         .cursor_pointer()
-        .hover(|s| s.bg(rgb(0x1f1f1f)))
+        .hover(|s| s.bg(control_hover()))
+        .tooltip(ui::tip(label.to_string(), None))
         .child(ui::icon(icon, 15., fg2()))
 }
 
@@ -256,11 +275,11 @@ fn presets(d: &Dashboard, s: &Snapshot, cx: &mut Context<Dashboard>) -> Div {
                 .h(px(40.))
                 .px(px(8.))
                 .gap(px(10.))
-                .rounded(px(8.))
+                .rounded(radius(ui::R_SM))
                 .when(selected, |r| r.bg(raised()))
                 .when(enabled && !selected, |r| {
                     r.cursor_pointer()
-                        .hover(|s| s.bg(rgb(0x1a1a1a)))
+                        .hover(|s| s.bg(control_hover()))
                         .on_click(select_preset(this.clone()))
                 })
                 .when(!enabled && !selected, |r| r.opacity(0.45))
@@ -270,14 +289,14 @@ fn presets(d: &Dashboard, s: &Snapshot, cx: &mut Context<Dashboard>) -> Div {
                         .children(selected.then(|| ui::icon("check", 15., ok()))),
                 )
                 .child(
-                    ui::ui_text(15.5, fg())
+                    ui::ui_text(ui::text::BODY, fg())
                         .flex_1()
                         .min_w_0()
                         .overflow_hidden()
                         .whitespace_nowrap()
                         .child(title),
                 )
-                .children(detail.map(|d| ui::ui_text(13.5, fg3()).child(d.to_string())))
+                .children(detail.map(|d| ui::ui_text(ui::text::CAPTION, fg3()).child(d.to_string())))
         };
     let mut list = v_flex()
         .gap(px(2.))
@@ -320,7 +339,11 @@ fn presets(d: &Dashboard, s: &Snapshot, cx: &mut Context<Dashboard>) -> Div {
                     ready,
                 ))
                 .child(
-                    icon_action(SharedString::from(format!("preset-rename-{i}")), "pencil")
+                    icon_action(
+                        SharedString::from(format!("preset-rename-{i}")),
+                        "pencil",
+                        "Rename",
+                    )
                         .on_click(cx.listener(move |this, _, window, cx| {
                             this.fan_renaming = Some(rename.clone());
                             this.fan_hint = None;
@@ -331,11 +354,28 @@ fn presets(d: &Dashboard, s: &Snapshot, cx: &mut Context<Dashboard>) -> Div {
                         })),
                 )
                 .child(
-                    icon_action(SharedString::from(format!("preset-delete-{i}")), "trash")
-                        .on_click(move |_, _, cx| {
-                            let name = delete.clone();
-                            crate::update_fan_settings(cx, move |s, _| s.delete_preset(&name));
-                        }),
+                    icon_action(
+                        SharedString::from(format!("preset-delete-{i}")),
+                        "trash",
+                        "Delete",
+                    )
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        // Deleting is instant; the toast's Undo puts it back.
+                        let before = crate::stats::stats(cx).read(cx).fan_settings.clone();
+                        let name = delete.clone();
+                        crate::update_fan_settings(cx, move |s, _| s.delete_preset(&name));
+                        let undo: ui::Callback =
+                            std::rc::Rc::new(move |_, cx| {
+                                let before = before.clone();
+                                crate::update_fan_settings(cx, move |s, _| *s = before);
+                            });
+                        this.show_toast(
+                            Tone::Ok,
+                            format!("Deleted \"{}\"", delete),
+                            Some(("Undo", undo)),
+                            cx,
+                        );
+                    })),
                 ),
         );
     }
@@ -348,7 +388,7 @@ fn presets(d: &Dashboard, s: &Snapshot, cx: &mut Context<Dashboard>) -> Div {
         .px(px(4.))
         .flex()
         .items_center()
-        .rounded(px(10.))
+        .rounded(radius(ui::R_MD))
         .bg(control())
         .border_1()
         .border_color(control_border())
@@ -356,7 +396,7 @@ fn presets(d: &Dashboard, s: &Snapshot, cx: &mut Context<Dashboard>) -> Div {
         .child(
             Input::new(&d.preset_name)
                 .appearance(false)
-                .text_size(px(14.5)),
+                .text_size(px(ui::text::SMALL)),
         );
     let save_label = if renaming.is_some() { "Rename" } else { "Save" };
     let editor = h_flex()
@@ -390,7 +430,7 @@ fn presets(d: &Dashboard, s: &Snapshot, cx: &mut Context<Dashboard>) -> Div {
         .child(list)
         .child(div().h(px(4.)))
         .child(editor)
-        .child(ui::ui_text(13.5, fg3()).child(hint))
+        .child(ui::ui_text(ui::text::CAPTION, fg3()).child(hint))
 }
 
 impl Dashboard {
@@ -542,7 +582,7 @@ fn fan_row(f: &FanStatus, sensors: &[Sensor], ready: bool) -> Div {
             Some(
                 h_flex()
                     .gap(px(12.))
-                    .child(ui::ui_text(14.5, fg2()).w(px(84.)).child("Speed"))
+                    .child(ui::ui_text(ui::text::SMALL, fg2()).w(px(84.)).child("Speed"))
                     .child(ui::stepper(
                         format!("fan{i}-rpm"),
                         rpm(*value),
@@ -595,7 +635,7 @@ fn fan_row(f: &FanStatus, sensors: &[Sensor], ready: bool) -> Div {
                 v_flex()
                     .flex_1()
                     .gap(px(6.))
-                    .child(ui::ui_text(13.5, fg3()).child(label.to_string()))
+                    .child(ui::ui_text(ui::text::CAPTION, fg3()).child(label.to_string()))
                     .child(stepper)
             };
             Some(
@@ -604,8 +644,8 @@ fn fan_row(f: &FanStatus, sensors: &[Sensor], ready: bool) -> Div {
                     .child(
                         h_flex()
                             .justify_between()
-                            .child(ui::ui_text(14.5, fg2()).child("Sensor"))
-                            .child(ui::ui_text(13.5, fg3()).child(current)),
+                            .child(ui::ui_text(ui::text::SMALL, fg2()).child("Sensor"))
+                            .child(ui::ui_text(ui::text::CAPTION, fg3()).child(current)),
                     )
                     .child(ui::stepper(
                         format!("fan{i}-sensor"),
@@ -645,10 +685,10 @@ fn fan_row(f: &FanStatus, sensors: &[Sensor], ready: bool) -> Div {
             h_flex()
                 .justify_between()
                 .items_baseline()
-                .child(ui::ui_text(16.5, fg()).child(f.name.clone()))
-                .child(ui::mono(17., fg()).child(rpm(info.current))),
+                .child(ui::ui_text(ui::text::LABEL, fg()).font_weight(FontWeight::MEDIUM).child(f.name.clone()))
+                .child(ui::mono(ui::text::LABEL, fg()).child(rpm(info.current))),
         )
-        .child(ui::dotted(caption).text_size(px(13.5)).text_color(fg3()))
+        .child(ui::dotted(caption).text_size(px(ui::text::CAPTION)).text_color(fg3()))
         .child(
             div()
                 .when(!ready, |d| d.opacity(0.45))
@@ -658,46 +698,59 @@ fn fan_row(f: &FanStatus, sensors: &[Sensor], ready: bool) -> Div {
         .children(
             f.issue
                 .clone()
-                .map(|m| ui::ui_text(13.5, caution()).child(m)),
+                .map(|m| ui::ui_text(ui::text::CAPTION, caution()).child(m)),
         )
 }
 
-/// Every sensor, by group, in a scrolling list.
-fn sensor_list(sensors: &[Sensor], read: bool) -> Div {
+/// Every sensor, by group. The note on the right says how fresh the
+/// readings are, and turns into a warning when they stop coming.
+fn sensor_list(sensors: &[Sensor], read_at: Option<std::time::Instant>) -> Div {
+    let age = read_at.map(|t| t.elapsed().as_secs());
+    let fresh = match age {
+        Some(a) if a > STALE_AFTER => ui::pill(format!("stale · {a} s old"), caution()),
+        Some(_) => ui::pill("live · every 2 s", fg3()),
+        None => ui::pill("reading…", fg3()),
+    };
     let head = h_flex()
         .justify_between()
         .child(ui::section_label("Temperatures"))
-        .child(ui::ui_text(13., fg4()).child("every 2 s"));
+        .child(fresh);
     if sensors.is_empty() {
-        let msg = if read {
-            "No temperature sensors on this Mac"
+        let (title, detail) = if read_at.is_some() {
+            (
+                "No temperature sensors",
+                "This Mac doesn't report any that Utilify can read.",
+            )
         } else {
-            "Reading sensors…"
+            ("Reading sensors…", "The first reading takes a moment.")
         };
         return v_flex()
             .gap(px(8.))
             .child(head)
-            .child(ui::ui_text(14.5, fg3()).child(msg));
+            .child(ui::empty_state("thermometer", title, detail));
     }
-    let mut list = v_flex().gap(px(6.));
+    let mut list = v_flex().gap(px(4.));
     let mut group = None;
     for s in sensors {
         if group != Some(s.group) {
             let first = group.is_none();
             group = Some(s.group);
             list = list.child(
-                ui::ui_text(13.5, fg2())
-                    .pt(px(if first { 0. } else { 8. }))
+                ui::ui_text(ui::text::CAPTION, fg2())
+                    .pt(px(if first { 0. } else { 10. }))
+                    .pb(px(2.))
                     .font_weight(FontWeight::MEDIUM)
                     .child(s.group.label()),
             );
         }
+        let hot = s.celsius >= HOT_C;
         list = list.child(ui::kv(
             s.name.clone(),
-            ui::mono(14., fg()).child(format!("{:.1}°C", s.celsius)),
+            ui::mono(ui::text::SMALL, if hot { caution() } else { fg() })
+                .child(format!("{:.1}°C", s.celsius)),
         ));
     }
-    v_flex().gap(px(8.)).child(head).child(list)
+    v_flex().gap(px(10.)).child(head).child(list)
 }
 
 /// The Fans tab.
@@ -706,11 +759,12 @@ pub(super) fn tab(d: &Dashboard, s: &super::Snapshot, cx: &mut Context<Dashboard
     let ready = f.ready();
     let mut fans_list = v_flex().gap(px(18.));
     if f.fans.fans.is_empty() {
-        fans_list = fans_list.child(ui::ui_text(14.5, fg3()).child(if f.fans.read_at.is_some() {
-            "This Mac has no fans to show"
+        let (title, detail) = if f.fans.read_at.is_some() {
+            ("No fans", "This Mac is fanless, or doesn't report its fans.")
         } else {
-            "Reading fans…"
-        }));
+            ("Reading fans…", "The first reading takes a moment.")
+        };
+        fans_list = fans_list.child(ui::empty_state("fan", title, detail));
     }
     for (k, fan) in f.fans.fans.iter().enumerate() {
         if k > 0 {
@@ -718,21 +772,14 @@ pub(super) fn tab(d: &Dashboard, s: &super::Snapshot, cx: &mut Context<Dashboard
         }
         fans_list = fans_list.child(fan_row(fan, &f.fans.sensors, ready));
     }
-    let body = v_flex()
-        .gap(px(16.))
-        .children(banners(f))
+    v_flex()
+        .gap(px(18.))
+        .children(banners(f, &s.power, cx))
         .child(presets(d, f, cx))
         .child(ui::separator())
         .child(fans_list)
         .child(ui::separator())
-        .child(sensor_list(&f.fans.sensors, f.fans.read_at.is_some()));
-    v_flex().child(
-        div()
-            .id("fans-tab")
-            .max_h(px(BODY_H))
-            .overflow_y_scroll()
-            .child(body),
-    )
+        .child(sensor_list(&f.fans.sensors, f.fans.read_at))
 }
 
 #[cfg(test)]

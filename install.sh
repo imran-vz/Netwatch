@@ -45,16 +45,6 @@ if pgrep -xq utilify; then
   osascript -e 'quit app "Utilify"' >/dev/null 2>&1 || pkill -x utilify || true
   sleep 1
 fi
-# Utilify was called Netwatch. Quit the old app so it stops writing to the
-# data directory Utilify moves over on first launch.
-if pgrep -xq netwatch; then
-  say "Quitting Netwatch (now Utilify)"
-  osascript -e 'quit app "Netwatch"' >/dev/null 2>&1 || pkill -x netwatch || true
-  sleep 1
-fi
-for old in "$dest/Netwatch.app" "$HOME/Applications/Netwatch.app"; do
-  [[ -d "$old" ]] && say "Netwatch.app is still at $old; delete it once Utilify works"
-done
 
 say "Installing to $dest/$APP"
 rm -rf "${dest:?}/$APP"
