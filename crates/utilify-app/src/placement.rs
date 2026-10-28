@@ -82,19 +82,16 @@ pub fn below_menu_bar(w: f64) -> Option<Placement> {
         })
         .collect();
     let (frame, visible, id) = *screen_for((cursor.x, cursor.y), &screens)?;
-    let mut cursor_x = cursor.x;
+    let cursor_x = cursor.x;
     // Debug builds: UTILIFY_DEV_SCREEN=main opens it on the main display
     // (top right), whatever screen the pointer is on. For screenshots.
     #[cfg(debug_assertions)]
-    let (frame, visible, id) = match (
+    let (frame, visible, id, cursor_x) = match (
         std::env::var("UTILIFY_DEV_SCREEN").as_deref(),
         screens.first(),
     ) {
-        (Ok("main"), Some(&(f, v, i))) => {
-            cursor_x = f.x + f.w - 200.0;
-            (f, v, i)
-        }
-        _ => (frame, visible, id),
+        (Ok("main"), Some(&(f, v, i))) => (f, v, i, f.x + f.w - 200.0),
+        _ => (frame, visible, id, cursor_x),
     };
     let (x, y) = place(cursor_x, frame, visible, w);
     Some(Placement {

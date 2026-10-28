@@ -44,15 +44,15 @@ pub fn mode_for(appearance: WindowAppearance) -> ThemeMode {
 /// Match the current OS appearance: gpui-kit's theme (text fields) and our
 /// own palette ([`crate::ui::color`]).
 pub fn follow_system(cx: &mut App) {
-    let mut mode = mode_for(cx.window_appearance());
+    let mode = mode_for(cx.window_appearance());
     // Debug builds: UTILIFY_DEV_APPEARANCE=light|dark overrides the OS, for
     // checking both palettes without changing the system setting.
     #[cfg(debug_assertions)]
-    match std::env::var("UTILIFY_DEV_APPEARANCE").as_deref() {
-        Ok("light") => mode = ThemeMode::Light,
-        Ok("dark") => mode = ThemeMode::Dark,
-        _ => {}
-    }
+    let mode = match std::env::var("UTILIFY_DEV_APPEARANCE").as_deref() {
+        Ok("light") => ThemeMode::Light,
+        Ok("dark") => ThemeMode::Dark,
+        _ => mode,
+    };
     crate::ui::color::set_light(mode == ThemeMode::Light);
     if Theme::global(cx).mode != mode {
         Theme::change(mode, None::<&mut Window>, cx);
