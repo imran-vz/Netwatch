@@ -8,15 +8,15 @@
     <title>Utilify · Network and storage in your macOS menu bar</title>
     <meta
       name="description"
-      content="Utilify is a small, open-source macOS menu-bar monitor written in Rust. Live download and upload rates, a traffic graph and a storage bar, one click from a dashboard with a speed test and 30 days of storage history."
+      content="Utilify is a small, open-source set of macOS menu-bar utilities written in Rust: live network rates and storage, a speed test, keep awake, fan control and a CyberChef-style data workbench."
     />
     <meta property="og:title" content="Utilify · Your network, in the menu bar" />
     <meta
       property="og:description"
-      content="A small, open-source macOS menu-bar monitor for network activity and storage, written in Rust on GPUI."
+      content="Open-source macOS menu-bar utilities in Rust: network and storage, keep awake, fan control and a data workbench."
     />
-    <meta property="og:image" content="https://netwatch.imran.codes/images/og.png" />
-    <meta property="og:url" content="https://netwatch.imran.codes/" />
+    <meta property="og:image" content="https://utilify.imran.codes/images/og.png" />
+    <meta property="og:url" content="https://utilify.imran.codes/" />
     <meta name="twitter:card" content="summary" />
     <link rel="preload" href="fonts/Geist-Regular.ttf" as="font" type="font/ttf" crossorigin />
     <style>
@@ -443,7 +443,14 @@
       }
       .popover img {
         width: 100%;
-        border-radius: 16px;
+        border-radius: 5px;
+      }
+      /* Tabs taller than the desk scroll in the app; here they fade out. */
+      .popover.tall {
+        max-height: 552px;
+        overflow: hidden;
+        -webkit-mask-image: linear-gradient(to bottom, #000 calc(100% - 56px), transparent);
+        mask-image: linear-gradient(to bottom, #000 calc(100% - 56px), transparent);
       }
       .popover.on {
         opacity: 1;
@@ -680,45 +687,35 @@
       }
 
       /* Clickable tabs over a dashboard screenshot. The box matches the
-         screenshot's top 604x222 px, so the hit areas scale with the image. */
+         screenshot's top 678x240 px, so the hit areas scale with the image. */
       .tabbed {
         position: relative;
       }
       .tabbed .hit {
         position: absolute;
         inset: 0 0 auto 0;
-        aspect-ratio: 604 / 222;
+        aspect-ratio: 678 / 240;
         pointer-events: none;
       }
       .tabbed .hit .tabs {
         position: absolute;
-        left: 10.76%;
-        width: 78.48%;
-        top: 73.42%;
-        height: 27.03%;
+        left: 2.21%;
+        width: 95.58%;
+        top: 59.17%;
+        height: 39.58%;
         display: grid;
-        grid-template-columns: repeat(4, 1fr);
-        padding: 1.5%;
-        gap: 1%;
+        grid-template-columns: repeat(6, 1fr);
+        padding: 0.8%;
+        gap: 0.5%;
       }
       .tabbed .hit button {
         all: unset;
         pointer-events: auto;
         cursor: pointer;
-        border-radius: 7px;
+        border-radius: 3px;
       }
       .tabbed .hit .tabs button:not([aria-pressed="true"]):hover {
         background: rgba(255, 255, 255, 0.05);
-      }
-      .tabbed .hit .next {
-        position: absolute;
-        left: 82.78%;
-        width: 8.61%;
-        top: 18.92%;
-        height: 23.42%;
-      }
-      .tabbed .hit .next:hover {
-        background: rgba(255, 255, 255, 0.06);
       }
       .tabbed .hit button:focus-visible {
         outline: 2px solid var(--focus);
@@ -744,7 +741,7 @@
       }
       .dash-media img {
         width: 100%;
-        border-radius: 16px;
+        border-radius: 5px;
         filter: drop-shadow(0 26px 40px rgba(0, 0, 0, 0.7));
       }
       .dash-list {
@@ -1097,7 +1094,7 @@
           <a href="#install">Install</a>
         </nav>
         <div class="nav-right">
-          <a class="gh" href="https://github.com/imran-vz/Netwatch">
+          <a class="gh" href="https://github.com/imran-vz/Utilify">
             <svg viewBox="0 0 16 16" width="16" height="16" fill="currentColor" aria-hidden="true">
               <path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0016 8c0-4.42-3.58-8-8-8z" />
             </svg>
@@ -1112,7 +1109,7 @@
       <div class="frame">
         <div class="news band" style="border-top: 0">
           <span>New:</span>
-          <a href="https://github.com/imran-vz/Netwatch">a four-tab dashboard with a speed test and 30 days of storage history. Read the code on GitHub →</a>
+          <a href="https://github.com/imran-vz/Utilify">keep awake, fan control and a CyberChef-style workbench, in a redesigned dashboard. Read the code on GitHub →</a>
         </div>
 
         <!-- Hero -->
@@ -1132,7 +1129,7 @@
                 </svg>
                 Get Utilify <kbd>I</kbd>
               </a>
-              <a class="btn" href="https://github.com/imran-vz/Netwatch" data-key="c">
+              <a class="btn" href="https://github.com/imran-vz/Utilify" data-key="c">
                 <svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
                   <path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0016 8c0-4.42-3.58-8-8-8z" />
                 </svg>
@@ -1163,7 +1160,7 @@
                 </div>
               </div>
               <div class="popover tabbed" id="popover" role="dialog" aria-label="Utilify dashboard">
-                <img src="images/tab-overview.webp" alt="Utilify dashboard, Overview tab: a two-minute rate graph, the current download and upload rates, and a storage bar" width="604" height="758" />
+                <img src="images/tab-overview.webp" alt="Utilify dashboard, Overview tab: a two-minute rate graph, the current download and upload rates, and a storage bar" width="678" height="1192" />
               </div>
               <div class="ctx" id="ctx" role="menu" aria-label="Utilify menu">
                 <div class="hl">Open Dashboard</div>
@@ -1237,7 +1234,7 @@
             <div class="sec-head">
               <div>
                 <h2>One click for the full picture</h2>
-                <p>Left-click the status item and a dashboard drops down beneath it, in four tabs. It reopens on the tab you left, and clicking away closes it.</p>
+                <p>Left-click the status item and a dashboard drops down beneath it, in six tabs. It reopens on the tab you left, and clicking away closes it.</p>
               </div>
             </div>
           </div>
@@ -1245,7 +1242,7 @@
             <div class="inner dash">
               <div class="dash-media">
                 <div class="tabbed" id="dashShot">
-                  <img src="images/tab-overview.webp" alt="Utilify dashboard, Overview tab: a two-minute rate graph, the current download and upload rates, and a storage bar" width="604" height="758" loading="lazy" />
+                  <img src="images/tab-overview.webp" alt="Utilify dashboard, Overview tab: a two-minute rate graph, the current download and upload rates, and a storage bar" width="678" height="1192" loading="lazy" />
                 </div>
               </div>
               <ul class="dash-list">
@@ -1265,9 +1262,17 @@
                   <h3><span class="tab-tag">Storage</span>30 days of disk use</h3>
                   <p>Used space on your startup disk over the last 30 days, sampled every 15 minutes and kept across launches, with a dashed trend line and the average change per day.</p>
                 </li>
+                <li data-tab="awake" role="button" tabindex="0" aria-pressed="false">
+                  <h3><span class="tab-tag">Awake</span>Keep the Mac awake</h3>
+                  <p>Stay awake indefinitely, for a set time, until a clock time, while an app runs, while a file downloads, or while the network is busy. Choose whether the display and the lid may still sleep.</p>
+                </li>
+                <li data-tab="fans" role="button" tabindex="0" aria-pressed="false">
+                  <h3><span class="tab-tag">Fans</span>Fan control and temperatures</h3>
+                  <p>Leave each fan on automatic, pin it to a speed, or tie it to a sensor with a curve. Save setups as presets. Every temperature sensor is listed underneath. Setting speeds needs a small root helper, which the installer adds.</p>
+                </li>
                 <li data-tab="settings" role="button" tabindex="0" aria-pressed="false">
                   <h3><span class="tab-tag">Settings</span>Your preferences</h3>
-                  <p>How often to refresh, whether to show speeds in the menu bar, and where the storage bar turns yellow and red. Quit is here too.</p>
+                  <p>What the menu bar shows, where the storage bar turns yellow and red, which notifications you get, and the health checks that make sure everything still works. Quit is here too.</p>
                 </li>
               </ul>
             </div>
@@ -1350,12 +1355,12 @@
             <h2>Put Utilify in your menu bar</h2>
             <p>There are no signed builds yet. With a recent Rust toolchain, the install script builds the app, puts it in Applications and opens it. Re-run it after pulling to update.</p>
             <div class="actions">
-              <a class="btn primary" href="https://github.com/imran-vz/Netwatch#build-and-run">Build from source</a>
-              <a class="btn" href="https://github.com/imran-vz/Netwatch/releases">Releases</a>
+              <a class="btn primary" href="https://github.com/imran-vz/Utilify#build-and-run">Build from source</a>
+              <a class="btn" href="https://github.com/imran-vz/Utilify/releases">Releases</a>
             </div>
             <div class="term">
               <button class="copy" id="copy" type="button">Copy</button>
-              <pre id="cmds"><span>$ </span>git clone https://github.com/imran-vz/Netwatch && cd Netwatch
+              <pre id="cmds"><span>$ </span>git clone https://github.com/imran-vz/Utilify && cd Utilify
 <span>$ </span>./install.sh</pre>
             </div>
           </div>
@@ -1375,10 +1380,10 @@
               <h4>Product</h4>
               <ul>
                 <li><a href="#install">Install</a></li>
-                <li><a href="https://github.com/imran-vz/Netwatch/releases">Releases</a></li>
-                <li><a href="https://github.com/imran-vz/Netwatch#readme">Readme</a></li>
-                <li><a href="https://github.com/imran-vz/Netwatch">Source</a></li>
-                <li><a href="https://github.com/imran-vz/Netwatch/issues">Issues</a></li>
+                <li><a href="https://github.com/imran-vz/Utilify/releases">Releases</a></li>
+                <li><a href="https://github.com/imran-vz/Utilify#readme">Readme</a></li>
+                <li><a href="https://github.com/imran-vz/Utilify">Source</a></li>
+                <li><a href="https://github.com/imran-vz/Utilify/issues">Issues</a></li>
               </ul>
             </div>
             <div>
@@ -1600,12 +1605,14 @@
         ).observe(desk);
 
         // ── Dashboard screenshots with working tabs. Each tab is its own
-        //    screenshot; buttons over the tab bar and the › button swap them.
+        //    screenshot; buttons over the tab bar swap them.
         const TABS = {
-          overview: { h: 758, alt: "Utilify dashboard, Overview tab: a two-minute rate graph, the current download and upload rates, and a storage bar" },
-          network: { h: 1120, alt: "Utilify dashboard, Network tab: the rate graph, link speed and use, totals for the session, and a speed test result with latency idle and under load" },
-          storage: { h: 768, alt: "Utilify dashboard, Storage tab: a chart of used disk space over time with a dashed trend line, and a storage bar" },
-          settings: { h: 1044, alt: "Utilify dashboard, Settings tab: refresh interval, speeds in the menu bar, storage colour thresholds, the red-zone notification, and Quit" },
+          overview: { h: 1192, alt: "Utilify dashboard, Overview tab: a two-minute rate graph, the current download and upload rates, storage, and keep-awake choices" },
+          network: { h: 1323, alt: "Utilify dashboard, Network tab: the rate graph, link speed and use, totals for the session, and a speed test result with latency idle and under load" },
+          storage: { h: 853, alt: "Utilify dashboard, Storage tab: a chart of used disk space over 30 days with a dashed trend line, and a storage bar" },
+          awake: { h: 1592, alt: "Utilify dashboard, Awake tab: ways to start a keep-awake session, session options, and quick settings" },
+          fans: { h: 1645, alt: "Utilify dashboard, Fans tab: presets, each fan with Auto, Constant and Sensor control, and the temperature sensors" },
+          settings: { h: 1645, alt: "Utilify dashboard, Settings tab: what the menu bar shows, storage colours, notifications and health checks" },
         };
         const NAMES = Object.keys(TABS);
         let preloaded = false;
@@ -1630,12 +1637,7 @@
             row.append(b);
             return b;
           });
-          const next = document.createElement("button");
-          next.type = "button";
-          next.className = "next";
-          next.setAttribute("aria-label", "Next tab");
-          next.addEventListener("click", () => set(NAMES[(NAMES.indexOf(current) + 1) % NAMES.length]));
-          hit.append(row, next);
+          hit.append(row);
           root.append(hit);
           root.addEventListener("pointerenter", preload, { once: true });
           let current = "overview";
@@ -1644,6 +1646,7 @@
             img.src = `images/tab-${t}.webp`;
             img.height = TABS[t].h;
             img.alt = TABS[t].alt;
+            root.classList.toggle("tall", TABS[t].h > 1300);
             buttons.forEach((b, i) => b.setAttribute("aria-pressed", String(NAMES[i] === t)));
             if (!quiet && onChange) onChange(t);
           }
